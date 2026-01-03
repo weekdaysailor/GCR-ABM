@@ -140,7 +140,7 @@ if st.session_state.df is not None:
         st.metric(
             "Final Inflation",
             f"{df.iloc[-1]['Inflation']*100:.2f}%",
-            delta=f"{(df.iloc[-1]['Inflation']-0.02)*100:.2f}pp",
+            delta=f"{(df.iloc[-1]['Inflation']-inflation_target)*100:.2f}pp vs target",
             delta_color="inverse"
         )
 
@@ -152,11 +152,12 @@ if st.session_state.df is not None:
         )
 
     # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🌡️ Climate & CO2",
         "💰 XCR Economics",
         "📈 Market Dynamics",
         "🏗️ Projects",
+        "🔬 Technology Economics",
         "⚖️ Climate Equity",
         "📋 Data Table"
     ])
@@ -283,14 +284,25 @@ if st.session_state.df is not None:
             row=1, col=1
         )
 
-        # Minting (positive) and burning (negative)
-        colors = ['green' if x >= 0 else 'red' for x in df['XCR_Minted']]
+        # Minting (positive - green bars)
         fig.add_trace(
             go.Bar(
                 x=df['Year'],
                 y=df['XCR_Minted'],
-                name="XCR Minted (Net)",
-                marker_color=colors,
+                name="XCR Minted",
+                marker_color='#2ca02c',
+                opacity=0.7
+            ),
+            row=2, col=1
+        )
+
+        # Burning (clawbacks - red bars, shown as negative)
+        fig.add_trace(
+            go.Bar(
+                x=df['Year'],
+                y=-df['XCR_Burned_Annual'],  # Negative to show below axis
+                name="XCR Burned (Clawbacks)",
+                marker_color='#d62728',
                 opacity=0.7
             ),
             row=2, col=1
@@ -300,7 +312,7 @@ if st.session_state.df is not None:
         fig.add_trace(
             go.Scatter(
                 x=df['Year'],
-                y=df['XCR_Burned'],
+                y=df['XCR_Burned_Cumulative'],
                 name="Cumulative XCR Burned",
                 line=dict(color='#d62728', width=3),
                 fill='tozeroy',
@@ -320,10 +332,10 @@ if st.session_state.df is not None:
         # XCR Economics Summary
         col1, col2, col3 = st.columns(3)
         with col1:
-            total_minted = df['XCR_Minted'].clip(lower=0).sum()
+            total_minted = df['XCR_Minted'].sum()
             st.metric("Total XCR Minted", f"{total_minted:.2e}")
         with col2:
-            total_burned = df.iloc[-1]['XCR_Burned']
+            total_burned = df.iloc[-1]['XCR_Burned_Cumulative']
             st.metric("Total XCR Burned", f"{total_burned:.2e}")
         with col3:
             burn_rate = (total_burned / total_minted * 100) if total_minted > 0 else 0
@@ -333,16 +345,25 @@ if st.session_state.df is not None:
     with tab3:
         st.subheader("Market Price, Sentiment & Inflation")
 
+        st.info("""
+        **Capital Flows Chart (Bottom)**: Shows how private capital is attracted to XCR as a climate hedge.
+        - **Forward Guidance** (orange dashed): Climate risk signal based on CO2 gap and progress
+        - **Net Capital Flow** (green/red bars): Annual inflows (green) and outflows (red) in billions
+        - **Cumulative Capital** (blue line): Net cumulative private investment in XCR
+        - **Key Insight**: High inflation and climate urgency INCREASE XCR demand (real asset hedge)
+        """)
+
         fig = make_subplots(
-            rows=4, cols=1,
+            rows=5, cols=1,
             subplot_titles=(
                 "XCR Market Price & Sentiment",
                 "Global Inflation Rate",
-                "Stability Ratio & CEA Warnings",
-                "System Capacity (Institutional Learning)"
+                "Stability Ratio, CEA Warnings & CQE Utilization",
+                "System Capacity (Institutional Learning)",
+                "Private Capital Flows (Climate Hedge Demand)"
             ),
-            vertical_spacing=0.10,
-            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}], [{"secondary_y": False}]]
+            vertical_spacing=0.08,
+            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}]]
         )
 
         # Price floor (area)
@@ -396,12 +417,13 @@ if st.session_state.df is not None:
             row=2, col=1
         )
 
-        # Inflation threshold
+        # CQE willingness center (sigmoid center at 1.5x target)
+        inflation_brake_threshold = inflation_target * 1.5 * 100  # Convert to percentage
         fig.add_hline(
-            y=3.0,
+            y=inflation_brake_threshold,
             line_dash="dash",
             line_color="orange",
-            annotation_text="Brake Threshold (3%)",
+            annotation_text=f"CQE Willingness Center ({inflation_brake_threshold:.1f}%)",
             row=2, col=1
         )
 
@@ -435,6 +457,28 @@ if st.session_state.df is not None:
             line_color="red",
             annotation_text="10:1 Brake",
             row=3, col=1
+        )
+
+        # CQE budget utilization on secondary axis
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['CQE_Budget_Utilization'],
+                name="CQE Budget Utilization",
+                line=dict(color='#8c564b', width=2, dash='dot'),
+            ),
+            row=3, col=1,
+            secondary_y=True
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=[0.9] * len(df),
+                name="Brake Start (90% cap)",
+                line=dict(color='#8c564b', width=1, dash='dash'),
+            ),
+            row=3, col=1,
+            secondary_y=True
         )
 
         # Warning count on secondary axis
@@ -474,15 +518,73 @@ if st.session_state.df is not None:
             row=4, col=1
         )
 
-        fig.update_xaxes(title_text="Year", row=4, col=1)
+        # Capital Flows (Net flows as bars, cumulative as line)
+        # Separate into inflows and outflows for coloring
+        df['Capital_Inflow'] = df['Net_Capital_Flow'].apply(lambda x: x if x > 0 else 0)
+        df['Capital_Outflow'] = df['Net_Capital_Flow'].apply(lambda x: x if x < 0 else 0)
+
+        # Inflows (green bars)
+        fig.add_trace(
+            go.Bar(
+                x=df['Year'],
+                y=df['Capital_Inflow'] / 1e9,  # Convert to billions
+                name="Capital Inflow",
+                marker_color='#2ca02c',
+                opacity=0.7
+            ),
+            row=5, col=1,
+            secondary_y=False
+        )
+
+        # Outflows (red bars)
+        fig.add_trace(
+            go.Bar(
+                x=df['Year'],
+                y=df['Capital_Outflow'] / 1e9,  # Convert to billions
+                name="Capital Outflow",
+                marker_color='#d62728',
+                opacity=0.7
+            ),
+            row=5, col=1,
+            secondary_y=False
+        )
+
+        # Net cumulative capital (line on secondary axis)
+        df['Net_Capital_Cumulative'] = df['Capital_Inflow_Cumulative'] - df['Capital_Outflow_Cumulative']
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['Net_Capital_Cumulative'] / 1e9,  # Convert to billions
+                name="Net Cumulative Capital",
+                line=dict(color='#1f77b4', width=3),
+            ),
+            row=5, col=1,
+            secondary_y=True
+        )
+
+        # Forward guidance (as context on secondary axis)
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['Forward_Guidance'],
+                name="Forward Guidance (Climate Risk)",
+                line=dict(color='#ff7f0e', width=2, dash='dash'),
+            ),
+            row=5, col=1,
+            secondary_y=True
+        )
+
+        fig.update_xaxes(title_text="Year", row=5, col=1)
         fig.update_yaxes(title_text="Price (USD)", row=1, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Sentiment (0-1)", row=1, col=1, secondary_y=True)
         fig.update_yaxes(title_text="Inflation (%)", row=2, col=1)
         fig.update_yaxes(title_text="Stability Ratio", row=3, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Warning (0/1)", row=3, col=1, secondary_y=True)
         fig.update_yaxes(title_text="Capacity (0-1)", row=4, col=1)
+        fig.update_yaxes(title_text="Net Flow ($B/year)", row=5, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="Cumulative ($B) / Guidance", row=5, col=1, secondary_y=True)
 
-        fig.update_layout(height=1100, showlegend=True, hovermode='x unified')
+        fig.update_layout(height=1300, showlegend=True, hovermode='x unified')
         st.plotly_chart(fig, width='stretch')
 
     # Tab 4: Projects
@@ -668,8 +770,198 @@ if st.session_state.df is not None:
         fig.update_layout(height=400, showlegend=False)
         st.plotly_chart(fig, width='stretch')
 
-    # Tab 5: Climate Equity
+    # Tab 5: Technology Economics
     with tab5:
+        st.subheader("Technology Learning & Policy Prioritization")
+
+        # Explanatory info boxes
+        st.info("""
+        **Learning Curves**: Technology costs decrease as cumulative deployment grows. CDR has the
+        steepest learning curve (20%) because it's early-stage, while conventional mitigation (12%)
+        and co-benefits (8%) improve more slowly.
+        """)
+
+        st.warning("""
+        **Policy Prioritization**: Before 2050, policy multipliers make conventional mitigation more
+        attractive (0.7x R-value = more XCR per tonne) and CDR less attractive (2.0x R-value = fewer
+        XCR per tonne). After 2050, this reverses to prioritize CDR deployment. The transition occurs
+        smoothly between years 45-55.
+        """)
+
+        st.error("""
+        **Capacity Limits**: Conventional mitigation reaches 80% of physical capacity by year 60 as
+        most emissions sources are already mitigated. This forces transition to CDR for continued CO2 reduction.
+        """)
+
+        # Chart A: Technology Cost Curves
+        st.markdown("### Technology Cost Evolution (Learning Curves)")
+        fig1 = go.Figure()
+
+        fig1.add_trace(go.Scatter(
+            x=df['Year'], y=df['CDR_Cost_Per_Tonne'],
+            name='CDR (20% LR)',
+            line=dict(color='#d62728', width=3),
+            mode='lines'
+        ))
+        fig1.add_trace(go.Scatter(
+            x=df['Year'], y=df['Conventional_Cost_Per_Tonne'],
+            name='Conventional (12% LR)',
+            line=dict(color='#2ca02c', width=3),
+            mode='lines'
+        ))
+        fig1.add_trace(go.Scatter(
+            x=df['Year'], y=df['Cobenefits_Cost_Per_Tonne'],
+            name='Co-benefits (8% LR)',
+            line=dict(color='#ff7f0e', width=3),
+            mode='lines'
+        ))
+
+        fig1.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Cost (USD/tonne CO2)",
+            hovermode='x unified',
+            height=400
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+
+        # Chart B: Policy R-Multipliers Over Time
+        st.markdown("### Policy R-Multipliers (Channel Prioritization)")
+        fig2 = go.Figure()
+
+        fig2.add_trace(go.Scatter(
+            x=df['Year'], y=df['CDR_Policy_Multiplier'],
+            name='CDR',
+            line=dict(color='#d62728', width=3),
+            mode='lines'
+        ))
+        fig2.add_trace(go.Scatter(
+            x=df['Year'], y=df['Conventional_Policy_Multiplier'],
+            name='Conventional',
+            line=dict(color='#2ca02c', width=3),
+            mode='lines'
+        ))
+        fig2.add_trace(go.Scatter(
+            x=df['Year'], y=df['Cobenefits_Policy_Multiplier'],
+            name='Co-benefits',
+            line=dict(color='#ff7f0e', width=3),
+            mode='lines'
+        ))
+
+        # Add annotations for eras
+        fig2.add_annotation(x=20, y=1.8, text="Conventional Priority Era",
+                           showarrow=False, font=dict(size=12, color='#2ca02c'))
+        fig2.add_annotation(x=70, y=1.8, text="CDR Ramp-Up Era",
+                           showarrow=False, font=dict(size=12, color='#d62728'))
+        fig2.add_vline(x=45, line_dash="dash", line_color="gray", opacity=0.5)
+        fig2.add_vline(x=55, line_dash="dash", line_color="gray", opacity=0.5)
+
+        fig2.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Policy Multiplier (applied to R-value)",
+            hovermode='x unified',
+            height=400
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+        # Chart C: Channel Profitability Comparison
+        st.markdown("### Channel Profitability (Revenue - Cost)")
+        fig3 = go.Figure()
+
+        fig3.add_trace(go.Scatter(
+            x=df['Year'], y=df['CDR_Profitability'],
+            name='CDR',
+            line=dict(color='#d62728', width=3),
+            fill='tozeroy',
+            mode='lines'
+        ))
+        fig3.add_trace(go.Scatter(
+            x=df['Year'], y=df['Conventional_Profitability'],
+            name='Conventional',
+            line=dict(color='#2ca02c', width=3),
+            fill='tozeroy',
+            mode='lines'
+        ))
+        fig3.add_trace(go.Scatter(
+            x=df['Year'], y=df['Cobenefits_Profitability'],
+            name='Co-benefits',
+            line=dict(color='#ff7f0e', width=3),
+            fill='tozeroy',
+            mode='lines'
+        ))
+
+        fig3.add_hline(y=0, line_dash="dash", line_color="black",
+                      annotation_text="Break-even")
+
+        fig3.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Profitability (USD/tonne)",
+            hovermode='x unified',
+            height=400
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+
+        st.markdown("""
+        **How to read profitability**: When a line crosses zero from below, that channel becomes
+        economically viable and projects will initiate. Conventional is highly profitable early
+        (due to policy subsidy + lower costs), while CDR only becomes viable later as costs fall
+        and policy shifts.
+        """)
+
+        # Chart D: Conventional Capacity Constraint
+        st.markdown("### Conventional Mitigation Capacity Utilization")
+        fig4 = go.Figure()
+
+        fig4.add_trace(go.Scatter(
+            x=df['Year'],
+            y=df['Conventional_Capacity_Utilization'] * 100,
+            name='Capacity Utilization',
+            line=dict(color='#2ca02c', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(44, 160, 44, 0.2)',
+            mode='lines'
+        ))
+
+        fig4.add_hrect(y0=80, y1=100, fillcolor="red", opacity=0.1,
+                      annotation_text="Capacity Limit (80%)", annotation_position="top left")
+
+        fig4.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Capacity Utilization (%)",
+            yaxis_range=[0, 100],
+            hovermode='x unified',
+            height=400
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+
+        st.markdown("""
+        **Capacity limit explanation**: Conventional mitigation (solar, wind, efficiency) can only
+        address existing emissions sources. By year 60, ~80% of feasible mitigation potential has
+        been captured. After this point, CDR (direct air capture, reforestation) becomes essential
+        for further CO2 reduction.
+        """)
+
+        # Summary statistics
+        st.markdown("### Technology Transition Summary")
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            cdr_cost_reduction = ((df.iloc[0]['CDR_Cost_Per_Tonne'] - df.iloc[-1]['CDR_Cost_Per_Tonne'])
+                                 / df.iloc[0]['CDR_Cost_Per_Tonne'] * 100)
+            st.metric("CDR Cost Reduction", f"{cdr_cost_reduction:.1f}%",
+                     delta=f"${df.iloc[0]['CDR_Cost_Per_Tonne']:.0f} → ${df.iloc[-1]['CDR_Cost_Per_Tonne']:.0f}/tonne")
+
+        with col2:
+            policy_transition_year = df[df['CDR_Policy_Multiplier'] <= 1.5].iloc[0]['Year'] if len(df[df['CDR_Policy_Multiplier'] <= 1.5]) > 0 else "N/A"
+            st.metric("Policy Transition Year", f"Year {policy_transition_year}",
+                     delta="CDR penalty → CDR priority")
+
+        with col3:
+            conv_cap_year = df[df['Conventional_Capacity_Utilization'] >= 0.79].iloc[0]['Year'] if len(df[df['Conventional_Capacity_Utilization'] >= 0.79]) > 0 else "N/A"
+            st.metric("Conventional Cap Reached", f"Year {conv_cap_year}",
+                     delta="80% capacity limit")
+
+    # Tab 6: Climate Equity
+    with tab6:
         st.subheader("Climate Equity & Wealth Transfer Analysis")
 
         # Get equity summary
@@ -697,72 +989,43 @@ if st.session_state.df is not None:
                      delta="surplus" if net_non_oecd > 0 else "deficit",
                      delta_color="normal" if net_non_oecd > 0 else "inverse")
 
-        # Net wealth transfer
+        # Net transfer
         st.markdown("### Net Wealth Transfer")
         transfer = equity['net_transfer_to_south']
-        transfer_usd = transfer * df.iloc[-1]['Market_Price']
         direction = "North → South" if transfer > 0 else "South → North"
+        transfer_usd = abs(transfer) * df.iloc[-1]['Market_Price']
 
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("XCR Flow", f"{abs(transfer):.2e}", delta=direction)
+            st.metric("Net XCR Flow", f"{abs(transfer):.2e} XCR",
+                     delta=direction)
         with col2:
-            st.metric("USD Value", f"${abs(transfer_usd):.2e}",
-                     delta=f"At ${df.iloc[-1]['Market_Price']:.2f}/XCR")
-
-        # Visualization: OECD vs non-OECD flows
-        st.markdown("### XCR Flows by Group")
-
-        fig = go.Figure()
-
-        categories = ['OECD (North)', 'Non-OECD (South)']
-        earned = [equity['oecd_earned'], equity['non_oecd_earned']]
-        purchased = [equity['oecd_purchased'], equity['non_oecd_purchased']]
-
-        fig.add_trace(go.Bar(
-            name='XCR Earned (Projects)',
-            x=categories,
-            y=earned,
-            marker_color='#2ca02c'
-        ))
-
-        fig.add_trace(go.Bar(
-            name='XCR Purchased (CQE)',
-            x=categories,
-            y=purchased,
-            marker_color='#d62728'
-        ))
-
-        fig.update_layout(
-            barmode='group',
-            height=400,
-            yaxis_title="XCR Tokens",
-            showlegend=True
-        )
-
-        st.plotly_chart(fig, width='stretch')
+            st.metric("USD Equivalent", f"${transfer_usd:.2e}",
+                     delta=f"@ ${df.iloc[-1]['Market_Price']:.2f}/XCR")
 
         # Country-level details
-        st.markdown("### Top Countries by Net XCR Position")
-
+        st.markdown("### Country-Level Net XCR Positions")
         country_df = pd.DataFrame(equity['country_details'])
-        country_df['Net XCR'] = country_df['net_xcr']
-        country_df['OECD'] = country_df['oecd'].apply(lambda x: 'Yes' if x else 'No')
+
+        # Add formatted columns
+        country_df['Net XCR (Earned - Purchased)'] = country_df['net_xcr'].apply(lambda x: f"{x:.2e}")
+        country_df['OECD Status'] = country_df['oecd'].apply(lambda x: 'North' if x else 'South')
         country_df['Historical Emissions (GtCO2)'] = country_df['historical_emissions_gtco2']
-        country_df['GDP ($T)'] = country_df['gdp_tril']
+        country_df['GDP (Tril USD)'] = country_df['gdp_tril']
 
-        # Display top 20 by absolute net XCR
-        display_df = country_df[['country', 'OECD', 'Net XCR', 'Historical Emissions (GtCO2)', 'GDP ($T)']].head(20)
+        display_df = country_df[['country', 'OECD Status', 'Net XCR (Earned - Purchased)',
+                                'Historical Emissions (GtCO2)', 'GDP (Tril USD)']].copy()
 
-        st.dataframe(display_df, width='stretch', height=400)
+        st.dataframe(display_df, use_container_width=True, height=400)
 
-        # Explanation
         st.markdown("""
         ---
-        **How Equity Works in GCR:**
+        **Equity Mechanism Explanation**:
 
-        1. **R-Value Differential**: South earns more XCR per tonne (CDR: R=1.0, North conventional: R=1.5+)
-        2. **CQE Burden Sharing**: North contributes more to defend price floor (GDP-proportional)
+        The GCR system naturally creates wealth transfer from Global North to Global South through:
+
+        1. **Historical Responsibility**: High-emission OECD countries contribute more CQE (buying XCR)
+        2. **Project Distribution**: Global South has comparative advantage in CDR/nature-based projects
         3. **Project Geography**: CDR/nature-based projects predominantly in South
 
         **Result**: Natural wealth transfer from North to South for climate action.
@@ -770,8 +1033,8 @@ if st.session_state.df is not None:
         See `EQUITY_ANALYSIS.md` for detailed explanation.
         """)
 
-    # Tab 6: Data Table
-    with tab6:
+    # Tab 7: Data Table
+    with tab7:
         st.subheader("Simulation Data")
 
         # Display controls
