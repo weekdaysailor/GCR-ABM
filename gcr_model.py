@@ -39,6 +39,8 @@ class Project:
     years_in_development: int = 0
     total_xcr_minted: float = 0.0
     health: float = 1.0  # 1.0 = healthy, decays over time with stochastic events
+    durability_years: int = 100  # Minimum durability
+    total_sequestered_tonnes: float = 0.0  # Physical carbon delivered (for reversals)
 
     # Backward compatibility property
     @property
@@ -812,8 +814,8 @@ class ProjectsBroker:
                     remaining_capital -= annual_seq * marginal_cost
                     remaining_capacity_gt -= annual_seq / 1e9
 
-    def step_projects(self, current_co2_ppm: float = 420.0, current_inflation: float = 0.02):
-        """Advance all projects by one year
+    def step_projects(self, current_co2_ppm: float = 420.0, current_inflation: float = 0.02) -> float:
+        """Advance all projects by one year and return reversal_tonnes
 
         When CO2 < 350 ppm (target achieved), projects have increased retirement rate
         to gradually wind down operations as climate goal is achieved.
@@ -822,6 +824,8 @@ class ProjectsBroker:
         ongoing minting pressure.
         """
         target_co2 = 350.0
+
+        reversal_tonnes = 0.0
 
         for project in self.projects:
             if project.status != ProjectStatus.FAILED:
@@ -856,11 +860,15 @@ class ProjectsBroker:
 
                     if np.random.random() < retirement_probability:
                         project.status = ProjectStatus.FAILED
+                        reversal_tonnes += project.total_sequestered_tonnes
+                        project.total_sequestered_tonnes = 0.0
                         # Note: This is retirement, not failure, but uses same status
                         continue
 
                 # Normal project step (development progress, stochastic decay)
                 project.step()
+
+        return reversal_tonnes
 
     def get_operational_projects(self) -> List[Project]:
         """Return list of operational projects ready for verification"""
@@ -1104,24 +1112,24 @@ class Auditor:
                 return "FAIL"
         return "PASS"
 
-    def verify_and_mint_xcr(self, project: Project) -> float:
-        """Verify project and return XCR to mint (or 0 if failed)
-
-        Returns: XCR minted (fresh supply)
-        """
+    def verify_and_mint_xcr(self, project: Project) -> tuple[float, float]:
+        """Verify project and return (XCR to mint, reversal_tonnes)"""
         audit_result = self.audit_project(project)
 
         if audit_result == "PASS":
             # Mint XCR: tonnes sequestered / R
             xcr_minted = project.annual_sequestration_tonnes / project.r_value
             project.total_xcr_minted += xcr_minted
-            return xcr_minted
+            project.total_sequestered_tonnes += project.annual_sequestration_tonnes
+            return xcr_minted, 0.0
         else:
             # FAIL - clawback (burn previously minted XCR)
             clawback_amount = project.total_xcr_minted * 0.5  # Burn 50% of lifetime rewards
             self.total_xcr_burned += clawback_amount
+            reversal_tonnes = project.total_sequestered_tonnes
+            project.total_sequestered_tonnes = 0.0
             project.status = ProjectStatus.FAILED
-            return -clawback_amount  # Negative = burn
+            return -clawback_amount, reversal_tonnes  # Negative = burn
 
 
 # ============================================================================
@@ -1437,7 +1445,7 @@ class GCR_ABM_Simulation:
                 )
 
             # 5. Step all projects (development progress, stochastic decay, retirement)
-            self.projects_broker.step_projects(self.co2_level, self.global_inflation)
+            reversal_tonnes_projects = self.projects_broker.step_projects(self.co2_level, self.global_inflation)
 
             # 6. Auditor verifies operational projects and mints XCR
             operational_projects = self.projects_broker.get_operational_projects()
@@ -1450,14 +1458,17 @@ class GCR_ABM_Simulation:
             xcr_minted_this_year = 0.0
             xcr_burned_this_year = 0.0  # Track burning separately
 
+            reversal_tonnes_audits = 0.0
+
             if self.enable_audits and capacity > 0:
                 for project in operational_projects:
-                    xcr_change = self.auditor.verify_and_mint_xcr(project)
+                    xcr_change, reversal = self.auditor.verify_and_mint_xcr(project)
                     # Apply capacity multiplier and brake factor to XCR minting
                     # Capacity: institutional learning (0-100% over 5 years)
                     # Brake: CEA stability control (reduces when ratio > 10:1)
                     brake_factor = self.cea.brake_factor
                     xcr_change_adjusted = xcr_change * capacity * brake_factor
+                    reversal_tonnes_audits += reversal
 
                     if xcr_change > 0:
                         # Successful verification - MINT XCR
@@ -1508,6 +1519,9 @@ class GCR_ABM_Simulation:
                 self.investor_market.market_price_xcr += price_support
                 self.global_inflation += inflation_impact
 
+            # Enforce absolute price floor
+            self.investor_market.market_price_xcr = max(self.investor_market.market_price_xcr, self.price_floor)
+
             # 8. Update CO2 levels: BAU emissions minus GCR sequestration
             # BAU emissions are a CONSTANT FLOW (GtCO2/year), not percentage of stock
             # Conventional mitigation reduces emissions flow; CDR/cobenefits remove CO2 from stock.
@@ -1526,9 +1540,13 @@ class GCR_ABM_Simulation:
             removal_gtc = (cdr_sequestration + cobenefit_sequestration) / 1e9 / 3.67  # tonnes CO2 -> GtC
             co2_reduction_ppm = removal_gtc * 0.47
 
+            reversal_tonnes_total = reversal_tonnes_projects + reversal_tonnes_audits
+            reversal_gtc = reversal_tonnes_total / 1e9 / 3.67
+            reversal_ppm = reversal_gtc * 0.47
+
             # Net change: CO2 only declines when sequestration > BAU emissions (net zero achieved)
             # This is now a proper flow balance: Emissions IN - Sequestration OUT
-            net_change_ppm = actual_emissions_ppm - co2_reduction_ppm
+            net_change_ppm = actual_emissions_ppm + reversal_ppm - co2_reduction_ppm
             self.co2_level += net_change_ppm
 
             # BAU emissions grow over time (economic growth increases fossil fuel use)
@@ -1588,6 +1606,7 @@ class GCR_ABM_Simulation:
                 "Projects_Development": len(development_projects),
                 "Projects_Failed": len(failed_projects),
                 "Sequestration_Tonnes": total_sequestration,
+                "Reversal_Tonnes": reversal_tonnes_total,
                 "CEA_Warning": self.cea.warning_8to1_active,
                 "CQE_Spent": self.central_bank.total_cqe_spent,
                 "Active_Countries": len(self.countries),
