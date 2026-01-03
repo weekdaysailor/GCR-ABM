@@ -328,25 +328,35 @@ class InvestorMarket:
         self.price_floor = price_floor
         self.market_price_xcr = price_floor + (50 * self.sentiment)
 
-    def update_sentiment(self, cea_warning: bool, global_inflation: float):
+    def update_sentiment(self, cea_warning: bool, global_inflation: float,
+                        co2_level: float = None, initial_co2: float = None):
         """Update investor sentiment based on system state
 
         Sentiment ranges from 0.0 (panic) to 1.0 (full trust).
-        Uses symmetric multiplicative decay/recovery to avoid asymmetric feedback loops.
+        Responds to both problems (warnings, inflation) AND success (CO2 reduction).
         """
-        # Decay factors (multiplicative)
+        # NEGATIVE DRIVERS: Decay when there are problems
         if cea_warning:
-            self.sentiment *= 0.95  # 5% decay on 8:1 warning (was 0.9)
+            self.sentiment *= 0.97  # 3% decay on 8:1 warning (reduced from 5%)
 
-        if global_inflation > 0.04:
-            self.sentiment *= 0.90  # 10% decay on high inflation (was 0.85)
+        if global_inflation > 0.06:  # Very high inflation (>6%)
+            self.sentiment *= 0.95  # 5% decay
+        elif global_inflation > 0.04:  # High inflation (4-6%)
+            self.sentiment *= 0.98  # 2% decay (reduced from 10%)
 
-        # Recovery if stable (multiplicative toward 1.0)
-        if not cea_warning and global_inflation <= 0.03:
-            # Multiplicative recovery: moves toward 1.0 proportionally
-            # Faster recovery when further from 1.0
-            recovery_rate = 0.1  # 10% of gap to 1.0
-            self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * recovery_rate)
+        # POSITIVE DRIVERS: Recovery based on system performance
+        # Base recovery: System functioning, no major problems
+        if not cea_warning and global_inflation < 0.05:
+            base_recovery = 0.05  # 5% of gap to 1.0
+            self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * base_recovery)
+
+        # Bonus recovery: System is delivering CO2 reductions
+        if co2_level is not None and initial_co2 is not None:
+            co2_reduction = initial_co2 - co2_level
+            if co2_reduction > 0.05:  # At least 0.05 ppm reduction
+                # Boost recovery when CO2 is actually falling
+                bonus_recovery = 0.03  # Additional 3% of gap
+                self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * bonus_recovery)
 
         # Ensure minimum sentiment (prevent total collapse)
         self.sentiment = max(0.1, self.sentiment)
@@ -631,7 +641,9 @@ class GCR_ABM_Simulation:
             # 2. Update investor sentiment
             self.investor_market.update_sentiment(
                 self.cea.warning_8to1_active,
-                self.global_inflation
+                self.global_inflation,
+                self.co2_level,
+                self.cea.initial_co2_ppm
             )
 
             # 3. CEA updates policy
