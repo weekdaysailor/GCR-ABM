@@ -42,6 +42,7 @@ st.sidebar.header("Simulation Parameters")
 years = st.sidebar.slider("Simulation Years", min_value=10, max_value=100, value=50, step=10)
 price_floor = st.sidebar.slider("XCR Price Floor (Initial, USD)", min_value=0, max_value=999, value=100, step=10)
 adoption_rate = st.sidebar.slider("GCR Adoption Rate (countries/year)", min_value=0.0, max_value=10.0, value=3.5, step=0.5)
+inflation_target = st.sidebar.slider("Inflation Target (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.25) / 100.0
 enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
 random_seed = st.sidebar.number_input("Random Seed (0 = random)", min_value=0, max_value=10000, value=42)
 
@@ -58,7 +59,7 @@ if run_button:
         if random_seed > 0:
             np.random.seed(random_seed)
 
-        sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor, adoption_rate=adoption_rate)
+        sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor, adoption_rate=adoption_rate, inflation_target=inflation_target)
         df = sim.run_simulation()
 
         st.session_state.df = df

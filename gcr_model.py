@@ -394,17 +394,17 @@ class GCR_ABM_Simulation:
     """Main simulation coordinating all agents"""
 
     def __init__(self, years: int = 50, enable_audits: bool = True, price_floor: float = 100.0,
-                 adoption_rate: float = 3.5):
+                 adoption_rate: float = 3.5, inflation_target: float = 0.02):
         self.years = years
         self.enable_audits = enable_audits
         self.price_floor = price_floor
         self.adoption_rate = adoption_rate  # Countries joining per year
+        self.inflation_target = inflation_target  # Target inflation rate (default 2%)
         self.step = 0
 
         # Global state
         self.co2_level = 420.0  # ppm
-        self.global_inflation = 0.02
-        self.inflation_target = 0.02  # 2% target
+        self.global_inflation = inflation_target  # Start at target
         self.total_xcr_supply = 0.0
 
         # BAU (Business As Usual) trajectory - no GCR intervention
