@@ -337,25 +337,31 @@ class InvestorMarket:
         """
         # NEGATIVE DRIVERS: Decay when there are problems
         if cea_warning:
-            self.sentiment *= 0.97  # 3% decay on 8:1 warning (reduced from 5%)
+            self.sentiment *= 0.96  # 4% decay on 8:1 warning
 
         if global_inflation > 0.06:  # Very high inflation (>6%)
-            self.sentiment *= 0.95  # 5% decay
+            self.sentiment *= 0.94  # 6% decay
         elif global_inflation > 0.04:  # High inflation (4-6%)
-            self.sentiment *= 0.98  # 2% decay (reduced from 10%)
+            self.sentiment *= 0.97  # 3% decay
+        elif global_inflation > 0.03:  # Moderate inflation (3-6%)
+            self.sentiment *= 0.995  # 0.5% decay (inflation above comfort zone)
 
         # POSITIVE DRIVERS: Recovery based on system performance
         # Base recovery: System functioning, no major problems
-        if not cea_warning and global_inflation < 0.05:
-            base_recovery = 0.05  # 5% of gap to 1.0
+        if not cea_warning and global_inflation <= 0.025:
+            # Only recover when inflation is truly under control (≤2.5%)
+            base_recovery = 0.02  # 2% of gap to 1.0 (reduced from 5%)
             self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * base_recovery)
 
-        # Bonus recovery: System is delivering CO2 reductions
+        # Bonus recovery: System is delivering meaningful CO2 reductions
         if co2_level is not None and initial_co2 is not None:
             co2_reduction = initial_co2 - co2_level
-            if co2_reduction > 0.05:  # At least 0.05 ppm reduction
-                # Boost recovery when CO2 is actually falling
-                bonus_recovery = 0.03  # Additional 3% of gap
+            # Scaled bonus: more reduction = more confidence boost
+            if co2_reduction > 0.5:  # Significant progress (>0.5 ppm)
+                bonus_recovery = 0.015  # 1.5% bonus
+                self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * bonus_recovery)
+            elif co2_reduction > 0.1:  # Moderate progress (>0.1 ppm)
+                bonus_recovery = 0.005  # 0.5% bonus
                 self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * bonus_recovery)
 
         # Ensure minimum sentiment (prevent total collapse)
@@ -682,6 +688,8 @@ class GCR_ABM_Simulation:
 
             # 6. Auditor verifies operational projects and mints XCR
             operational_projects = self.projects_broker.get_operational_projects()
+            development_projects = [p for p in self.projects_broker.projects if p.status == ProjectStatus.DEVELOPMENT]
+            failed_projects = [p for p in self.projects_broker.projects if p.status == ProjectStatus.FAILED]
             total_sequestration = 0.0
             xcr_minted_this_year = 0.0
 
@@ -746,6 +754,8 @@ class GCR_ABM_Simulation:
                 "Sentiment": self.investor_market.sentiment,
                 "Projects_Total": len(self.projects_broker.projects),
                 "Projects_Operational": len(operational_projects),
+                "Projects_Development": len(development_projects),
+                "Projects_Failed": len(failed_projects),
                 "Sequestration_Tonnes": total_sequestration,
                 "CEA_Warning": self.cea.warning_8to1_active,
                 "CQE_Spent": self.central_bank.total_cqe_spent,
@@ -840,10 +850,15 @@ if __name__ == "__main__":
     print(f"\n\nFinal Summary:")
     print(f"  CO2 Reduction: {420.0 - df.iloc[-1]['CO2_ppm']:.2f} ppm")
     print(f"  Total Projects: {df.iloc[-1]['Projects_Total']:.0f}")
-    print(f"  Operational Projects: {df.iloc[-1]['Projects_Operational']:.0f}")
+    print(f"    - Operational (delivering): {df.iloc[-1]['Projects_Operational']:.0f}")
+    print(f"    - Development (not yet): {df.iloc[-1]['Projects_Development']:.0f}")
+    print(f"    - Failed: {df.iloc[-1]['Projects_Failed']:.0f}")
+    failure_rate = (df.iloc[-1]['Projects_Failed'] / df.iloc[-1]['Projects_Total']) * 100 if df.iloc[-1]['Projects_Total'] > 0 else 0
+    print(f"  Failure Rate: {failure_rate:.1f}%")
     print(f"  Total XCR Supply: {df.iloc[-1]['XCR_Supply']:.2e}")
     print(f"  Total XCR Burned: {df.iloc[-1]['XCR_Burned']:.2e}")
     print(f"  Final Market Price: ${df.iloc[-1]['Market_Price']:.2f}")
+    print(f"  Final Sentiment: {df.iloc[-1]['Sentiment']:.3f}")
     print(f"  Final Inflation: {df.iloc[-1]['Inflation']*100:.2f}%")
 
     # Equity Analysis

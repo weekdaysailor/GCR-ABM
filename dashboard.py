@@ -120,10 +120,13 @@ if st.session_state.df is not None:
     col5, col6, col7, col8 = st.columns(4)
 
     with col5:
+        operational = int(df.iloc[-1]['Projects_Operational'])
+        development = int(df.iloc[-1]['Projects_Development'])
+        failed = int(df.iloc[-1]['Projects_Failed'])
         st.metric(
-            "Operational Projects",
-            f"{int(df.iloc[-1]['Projects_Operational'])}",
-            delta=f"{int(df.iloc[-1]['Projects_Total'])} total"
+            "Project Status",
+            f"{operational} operational",
+            delta=f"{development} dev, {failed} failed"
         )
 
     with col6:
@@ -525,6 +528,26 @@ if st.session_state.df is not None:
             row=1, col=1
         )
 
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['Projects_Development'],
+                name="In Development",
+                line=dict(color='#ff7f0e', width=2, dash='dot'),
+            ),
+            row=1, col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['Projects_Failed'],
+                name="Failed",
+                line=dict(color='#d62728', width=2, dash='dash'),
+            ),
+            row=1, col=1
+        )
+
         # Sequestration by year (bar chart)
         fig.add_trace(
             go.Bar(
@@ -586,18 +609,21 @@ if st.session_state.df is not None:
 
         # Project statistics
         st.subheader("Project Statistics")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
 
         operational_projects = [p for p in sim.projects_broker.projects if p.status.value == "operational"]
+        development_projects = [p for p in sim.projects_broker.projects if p.status.value == "development"]
         failed_projects = [p for p in sim.projects_broker.projects if p.status.value == "failed"]
 
         with col1:
-            st.metric("Total Projects Initiated", len(sim.projects_broker.projects))
+            st.metric("Total Initiated", len(sim.projects_broker.projects))
         with col2:
-            st.metric("Currently Operational", len(operational_projects))
+            st.metric("Operational", len(operational_projects))
         with col3:
-            st.metric("Failed Projects", len(failed_projects))
+            st.metric("In Development", len(development_projects))
         with col4:
+            st.metric("Failed", len(failed_projects))
+        with col5:
             failure_rate = len(failed_projects) / len(sim.projects_broker.projects) * 100 if len(sim.projects_broker.projects) > 0 else 0
             st.metric("Failure Rate", f"{failure_rate:.1f}%")
 
