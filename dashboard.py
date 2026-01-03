@@ -43,6 +43,15 @@ years = st.sidebar.slider("Simulation Years", min_value=10, max_value=100, value
 price_floor = st.sidebar.slider("XCR Price Floor (Initial, USD)", min_value=0, max_value=999, value=100, step=10)
 adoption_rate = st.sidebar.slider("GCR Adoption Rate (countries/year)", min_value=0.0, max_value=10.0, value=3.5, step=0.5)
 inflation_target = st.sidebar.slider("Inflation Target (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.25) / 100.0
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("XCR System Ramping")
+xcr_start_year = st.sidebar.slider("XCR Start Year", min_value=0, max_value=20, value=0, step=1,
+                                   help="Year when XCR system begins (0 = immediate)")
+years_to_full_capacity = st.sidebar.slider("Years to Full Capacity", min_value=1, max_value=20, value=5, step=1,
+                                           help="Years for system to ramp from 0% to 100% capacity")
+
+st.sidebar.markdown("---")
 enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
 random_seed = st.sidebar.number_input("Random Seed (0 = random)", min_value=0, max_value=10000, value=42)
 
@@ -59,7 +68,9 @@ if run_button:
         if random_seed > 0:
             np.random.seed(random_seed)
 
-        sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor, adoption_rate=adoption_rate, inflation_target=inflation_target)
+        sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor,
+                                 adoption_rate=adoption_rate, inflation_target=inflation_target,
+                                 xcr_start_year=xcr_start_year, years_to_full_capacity=years_to_full_capacity)
         df = sim.run_simulation()
 
         st.session_state.df = df
@@ -320,14 +331,15 @@ if st.session_state.df is not None:
         st.subheader("Market Price, Sentiment & Inflation")
 
         fig = make_subplots(
-            rows=3, cols=1,
+            rows=4, cols=1,
             subplot_titles=(
                 "XCR Market Price & Sentiment",
                 "Global Inflation Rate",
-                "Stability Ratio & CEA Warnings"
+                "Stability Ratio & CEA Warnings",
+                "System Capacity (Institutional Learning)"
             ),
-            vertical_spacing=0.12,
-            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}]]
+            vertical_spacing=0.10,
+            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}], [{"secondary_y": False}]]
         )
 
         # Price floor (area)
@@ -437,14 +449,37 @@ if st.session_state.df is not None:
             secondary_y=True
         )
 
-        fig.update_xaxes(title_text="Year", row=3, col=1)
+        # System Capacity (Institutional Learning)
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['Capacity'],
+                name="System Capacity",
+                line=dict(color='#17becf', width=3),
+                fill='tozeroy',
+                fillcolor='rgba(23, 190, 207, 0.3)'
+            ),
+            row=4, col=1
+        )
+
+        # Add reference line at 100% capacity
+        fig.add_hline(
+            y=1.0,
+            line_dash="dash",
+            line_color="green",
+            annotation_text="Full Capacity",
+            row=4, col=1
+        )
+
+        fig.update_xaxes(title_text="Year", row=4, col=1)
         fig.update_yaxes(title_text="Price (USD)", row=1, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Sentiment (0-1)", row=1, col=1, secondary_y=True)
         fig.update_yaxes(title_text="Inflation (%)", row=2, col=1)
         fig.update_yaxes(title_text="Stability Ratio", row=3, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Warning (0/1)", row=3, col=1, secondary_y=True)
+        fig.update_yaxes(title_text="Capacity (0-1)", row=4, col=1)
 
-        fig.update_layout(height=900, showlegend=True, hovermode='x unified')
+        fig.update_layout(height=1100, showlegend=True, hovermode='x unified')
         st.plotly_chart(fig, width='stretch')
 
     # Tab 4: Projects

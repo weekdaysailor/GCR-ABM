@@ -403,12 +403,15 @@ class GCR_ABM_Simulation:
     """Main simulation coordinating all agents"""
 
     def __init__(self, years: int = 50, enable_audits: bool = True, price_floor: float = 100.0,
-                 adoption_rate: float = 3.5, inflation_target: float = 0.02):
+                 adoption_rate: float = 3.5, inflation_target: float = 0.02,
+                 xcr_start_year: int = 0, years_to_full_capacity: int = 5):
         self.years = years
         self.enable_audits = enable_audits
         self.price_floor = price_floor
         self.adoption_rate = adoption_rate  # Countries joining per year
         self.inflation_target = inflation_target  # Target inflation rate (default 2%)
+        self.xcr_start_year = xcr_start_year  # Year when XCR system starts
+        self.years_to_full_capacity = years_to_full_capacity  # Ramp-up period
         self.step = 0
 
         # Global state
@@ -569,6 +572,32 @@ class GCR_ABM_Simulation:
 
         return newly_adopted
 
+    def get_capacity_multiplier(self, current_year: int) -> float:
+        """Calculate system capacity based on institutional learning curve
+
+        Returns value from 0.0 to 1.0 representing system capacity.
+        Before XCR start year: 0.0 (system not active)
+        During ramp-up: Linear progression from 0.0 to 1.0
+        After ramp-up: 1.0 (full capacity)
+
+        Args:
+            current_year: Current simulation year
+
+        Returns:
+            Capacity multiplier (0.0 to 1.0)
+        """
+        if current_year < self.xcr_start_year:
+            return 0.0  # System hasn't started yet
+
+        years_since_start = current_year - self.xcr_start_year
+
+        if years_since_start >= self.years_to_full_capacity:
+            return 1.0  # Full capacity reached
+
+        # Linear ramp from 0.0 to 1.0
+        progress = years_since_start / self.years_to_full_capacity
+        return progress
+
     def run_simulation(self):
         """Execute multi-agent simulation"""
         results = []
@@ -577,8 +606,15 @@ class GCR_ABM_Simulation:
         for year in range(self.years):
             self.step = year
 
-            # 0. Country adoption - new countries join GCR system
-            newly_adopted = self.adopt_countries(year)
+            # 0. Get capacity multiplier for this year (institutional learning)
+            capacity = self.get_capacity_multiplier(year)
+
+            # 0a. Country adoption - new countries join GCR system
+            # Apply capacity multiplier to adoption rate
+            if capacity > 0:
+                newly_adopted = self.adopt_countries(year)
+            else:
+                newly_adopted = []  # No adoption before XCR starts
 
             # 1. Chaos monkey - stochastic shocks
             self.chaos_monkey()
@@ -620,12 +656,14 @@ class GCR_ABM_Simulation:
             self.investor_market.price_floor = self.price_floor
 
             # 4. Projects broker initiates new projects
-            self.projects_broker.initiate_projects(
-                self.investor_market.market_price_xcr,
-                self.price_floor,
-                self.cea,
-                year
-            )
+            # Only initiate projects if capacity > 0 (system active)
+            if capacity > 0:
+                self.projects_broker.initiate_projects(
+                    self.investor_market.market_price_xcr,
+                    self.price_floor,
+                    self.cea,
+                    year
+                )
 
             # 5. Step all projects (development progress, stochastic decay)
             self.projects_broker.step_projects()
@@ -635,17 +673,19 @@ class GCR_ABM_Simulation:
             total_sequestration = 0.0
             xcr_minted_this_year = 0.0
 
-            if self.enable_audits:
+            if self.enable_audits and capacity > 0:
                 for project in operational_projects:
                     xcr_change = self.auditor.verify_and_mint_xcr(project)
-                    xcr_minted_this_year += xcr_change
+                    # Apply capacity multiplier to XCR minting (institutional learning)
+                    xcr_change_adjusted = xcr_change * capacity
+                    xcr_minted_this_year += xcr_change_adjusted
 
                     if xcr_change > 0:
                         # Successful verification
                         total_sequestration += project.annual_sequestration_tonnes
-                        # Track XCR earned by country
+                        # Track XCR earned by country (use adjusted amount)
                         if project.country in self.countries:
-                            self.countries[project.country]["xcr_earned"] += xcr_change
+                            self.countries[project.country]["xcr_earned"] += xcr_change_adjusted
 
             # Update XCR supply from minting
             self.total_xcr_supply += xcr_minted_this_year
@@ -698,7 +738,8 @@ class GCR_ABM_Simulation:
                 "CEA_Warning": self.cea.warning_8to1_active,
                 "CQE_Spent": self.central_bank.total_cqe_spent,
                 "Active_Countries": len(self.countries),
-                "CQE_Budget_Total": self.central_bank.total_cqe_budget
+                "CQE_Budget_Total": self.central_bank.total_cqe_budget,
+                "Capacity": capacity
             })
 
         return pd.DataFrame(results)
