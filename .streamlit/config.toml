@@ -1,0 +1,12 @@
+[server]
+# Bind to all network interfaces (allows access from other machines)
+address = "0.0.0.0"
+
+# Default port
+port = 8501
+
+# Disable CORS protection (for network access)
+enableCORS = false
+
+# Enable WebSocket compression
+enableWebsocketCompression = true
