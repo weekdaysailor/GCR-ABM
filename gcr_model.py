@@ -3,6 +3,7 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from enum import Enum
+from country_equity_data import COUNTRY_EQUITY_DATA
 
 # ============================================================================
 # CONSTANTS & ENUMS
@@ -184,10 +185,10 @@ class CentralBankAlliance:
         self.total_cqe_spent = 0.0  # Track total M0 created
 
     def defend_floor(self, market_price_xcr: float, total_xcr_supply: float,
-                    global_inflation: float) -> tuple[float, float]:
+                    global_inflation: float) -> tuple[float, float, float]:
         """Defend price floor using sigmoid-damped CQE
 
-        Returns: (price_support, inflation_impact)
+        Returns: (price_support, inflation_impact, xcr_purchased)
         """
         # Sigmoid damping: willingness decreases as inflation rises
         k = 12.0  # Sharpness of brake
@@ -214,9 +215,9 @@ class CentralBankAlliance:
             # Damped by willingness
             inflation_impact = (fiat_created / self.total_cqe_budget) * 0.001 * willingness
 
-            return price_support, inflation_impact
+            return price_support, inflation_impact, xcr_purchased
 
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
 
 class ProjectsBroker:
@@ -473,6 +474,14 @@ class GCR_ABM_Simulation:
             "Uganda": {"gdp_tril": 0.05, "base_cqe": 0.001, "tier": 3, "region": "Africa", "active": False, "adoption_year": None, "projects": []},
         }
 
+        # Enhance countries with equity data (OECD status, historical emissions, XCR tracking)
+        for country_name, country_data in self.all_countries.items():
+            equity_data = COUNTRY_EQUITY_DATA.get(country_name, {})
+            country_data["oecd"] = equity_data.get("oecd", False)
+            country_data["historical_emissions_gtco2"] = equity_data.get("historical_emissions_gtco2", 0.0)
+            country_data["xcr_earned"] = 0.0  # Track XCR earned from projects
+            country_data["xcr_purchased_equiv"] = 0.0  # Track XCR equivalent purchased via CQE
+
         # Start with 5 founding countries active (USA, Germany, Brazil, Indonesia, Kenya)
         self.countries = {k: v for k, v in self.all_countries.items() if v["active"]}
 
@@ -625,16 +634,26 @@ class GCR_ABM_Simulation:
                     if xcr_change > 0:
                         # Successful verification
                         total_sequestration += project.annual_sequestration_tonnes
+                        # Track XCR earned by country
+                        if project.country in self.countries:
+                            self.countries[project.country]["xcr_earned"] += xcr_change
 
             # Update XCR supply from minting
             self.total_xcr_supply += xcr_minted_this_year
 
             # 7. Central bank defends floor with CQE
-            price_support, inflation_impact = self.central_bank.defend_floor(
+            price_support, inflation_impact, xcr_purchased = self.central_bank.defend_floor(
                 self.investor_market.market_price_xcr,
                 self.total_xcr_supply,
                 self.global_inflation
             )
+
+            # Track XCR purchased by countries (distributed proportionally to CQE contributions)
+            if xcr_purchased > 0:
+                total_cqe = sum(c['base_cqe'] for c in self.countries.values())
+                for country_name, country_data in self.countries.items():
+                    country_share = country_data['base_cqe'] / total_cqe if total_cqe > 0 else 0
+                    country_data['xcr_purchased_equiv'] += xcr_purchased * country_share
 
             # Apply price support and inflation impact
             if price_support > 0:
@@ -675,6 +694,67 @@ class GCR_ABM_Simulation:
 
         return pd.DataFrame(results)
 
+    def get_equity_summary(self) -> Dict:
+        """Calculate equity flows between OECD and non-OECD countries
+
+        Returns dict with:
+        - oecd_earned: Total XCR earned by OECD countries
+        - oecd_purchased: Total XCR purchased (via CQE) by OECD countries
+        - non_oecd_earned: Total XCR earned by non-OECD countries
+        - non_oecd_purchased: Total XCR purchased by non-OECD countries
+        - net_transfer_to_south: Net XCR flow to non-OECD (positive = South gains)
+        - country_details: List of (country, oecd, net_xcr, historical_emissions) tuples
+        """
+        oecd_earned = 0.0
+        oecd_purchased = 0.0
+        non_oecd_earned = 0.0
+        non_oecd_purchased = 0.0
+        country_details = []
+
+        for country_name in self.all_countries.keys():
+            country = self.all_countries[country_name]
+            if not country["active"]:
+                continue  # Only count active countries
+
+            earned = country["xcr_earned"]
+            purchased = country["xcr_purchased_equiv"]
+            net_xcr = earned - purchased
+            oecd = country["oecd"]
+            hist_emissions = country["historical_emissions_gtco2"]
+
+            if oecd:
+                oecd_earned += earned
+                oecd_purchased += purchased
+            else:
+                non_oecd_earned += earned
+                non_oecd_purchased += purchased
+
+            country_details.append({
+                "country": country_name,
+                "oecd": oecd,
+                "xcr_earned": earned,
+                "xcr_purchased": purchased,
+                "net_xcr": net_xcr,
+                "historical_emissions_gtco2": hist_emissions,
+                "gdp_tril": country["gdp_tril"]
+            })
+
+        # Net transfer to South (positive = South benefits)
+        oecd_net = oecd_earned - oecd_purchased
+        non_oecd_net = non_oecd_earned - non_oecd_purchased
+        net_transfer_to_south = non_oecd_net  # Positive = South gains XCR
+
+        return {
+            "oecd_earned": oecd_earned,
+            "oecd_purchased": oecd_purchased,
+            "oecd_net": oecd_net,
+            "non_oecd_earned": non_oecd_earned,
+            "non_oecd_purchased": non_oecd_purchased,
+            "non_oecd_net": non_oecd_net,
+            "net_transfer_to_south": net_transfer_to_south,
+            "country_details": sorted(country_details, key=lambda x: abs(x["net_xcr"]), reverse=True)
+        }
+
 
 # ============================================================================
 # MAIN EXECUTION
@@ -703,4 +783,22 @@ if __name__ == "__main__":
     print(f"  Total XCR Burned: {df.iloc[-1]['XCR_Burned']:.2e}")
     print(f"  Final Market Price: ${df.iloc[-1]['Market_Price']:.2f}")
     print(f"  Final Inflation: {df.iloc[-1]['Inflation']*100:.2f}%")
+
+    # Equity Analysis
+    equity = sim.get_equity_summary()
+    print(f"\n\nClimate Equity & Wealth Transfer Analysis:")
+    print("-"*80)
+    print(f"OECD Countries (Global North):")
+    print(f"  XCR Earned (from projects):    {equity['oecd_earned']:.2e}")
+    print(f"  XCR Purchased (via CQE):       {equity['oecd_purchased']:.2e}")
+    print(f"  Net Position:                  {equity['oecd_net']:.2e} ({'surplus' if equity['oecd_net'] > 0 else 'deficit'})")
+    print(f"\nNon-OECD Countries (Global South):")
+    print(f"  XCR Earned (from projects):    {equity['non_oecd_earned']:.2e}")
+    print(f"  XCR Purchased (via CQE):       {equity['non_oecd_purchased']:.2e}")
+    print(f"  Net Position:                  {equity['non_oecd_net']:.2e} ({'surplus' if equity['non_oecd_net'] > 0 else 'deficit'})")
+    print(f"\nNet Wealth Transfer:")
+    transfer_direction = "North → South" if equity['net_transfer_to_south'] > 0 else "South → North"
+    print(f"  {abs(equity['net_transfer_to_south']):.2e} XCR ({transfer_direction})")
+    print(f"  At ${df.iloc[-1]['Market_Price']:.2f}/XCR = ${abs(equity['net_transfer_to_south']) * df.iloc[-1]['Market_Price']:.2e} USD")
+    print("-"*80)
     print("="*80)
