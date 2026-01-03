@@ -329,23 +329,32 @@ class InvestorMarket:
         self.market_price_xcr = price_floor + (50 * self.sentiment)
 
     def update_sentiment(self, cea_warning: bool, global_inflation: float):
-        """Update investor sentiment based on system state"""
-        # Decay factors
+        """Update investor sentiment based on system state
+
+        Sentiment ranges from 0.0 (panic) to 1.0 (full trust).
+        Uses symmetric multiplicative decay/recovery to avoid asymmetric feedback loops.
+        """
+        # Decay factors (multiplicative)
         if cea_warning:
-            self.sentiment *= 0.9  # Linear decay on warning
+            self.sentiment *= 0.95  # 5% decay on 8:1 warning (was 0.9)
 
         if global_inflation > 0.04:
-            self.sentiment *= 0.85  # Exponential decay on high inflation
+            self.sentiment *= 0.90  # 10% decay on high inflation (was 0.85)
 
-        # Recovery if stable
+        # Recovery if stable (multiplicative toward 1.0)
         if not cea_warning and global_inflation <= 0.03:
-            self.sentiment = min(1.0, self.sentiment + 0.05)
+            # Multiplicative recovery: moves toward 1.0 proportionally
+            # Faster recovery when further from 1.0
+            recovery_rate = 0.1  # 10% of gap to 1.0
+            self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * recovery_rate)
 
-        # Price discovery: Base price affected by sentiment
-        # Can drop below floor if sentiment is very low
-        base_price = self.price_floor * (0.5 + 0.5 * self.sentiment)  # 50%-100% of floor
-        sentiment_premium = 50 * self.sentiment
-        self.market_price_xcr = base_price + sentiment_premium
+        # Ensure minimum sentiment (prevent total collapse)
+        self.sentiment = max(0.1, self.sentiment)
+
+        # Price discovery: Floor + sentiment premium
+        # Market price should NEVER drop below floor (that's what CQE defends)
+        sentiment_premium = 50 * self.sentiment  # Max $50 premium at full trust
+        self.market_price_xcr = self.price_floor + sentiment_premium
 
 
 class Auditor:

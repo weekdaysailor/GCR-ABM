@@ -138,11 +138,12 @@ if st.session_state.df is not None:
         )
 
     # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🌡️ Climate & CO2",
         "💰 XCR Economics",
         "📈 Market Dynamics",
         "🏗️ Projects",
+        "⚖️ Climate Equity",
         "📋 Data Table"
     ])
 
@@ -606,8 +607,110 @@ if st.session_state.df is not None:
         fig.update_layout(height=400, showlegend=False)
         st.plotly_chart(fig, width='stretch')
 
-    # Tab 5: Data Table
+    # Tab 5: Climate Equity
     with tab5:
+        st.subheader("Climate Equity & Wealth Transfer Analysis")
+
+        # Get equity summary
+        equity = sim.get_equity_summary()
+
+        # High-level summary
+        st.markdown("### Global North vs Global South")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("#### OECD Countries (North)")
+            st.metric("XCR Earned", f"{equity['oecd_earned']:.2e}")
+            st.metric("XCR Purchased (CQE)", f"{equity['oecd_purchased']:.2e}")
+            net_oecd = equity['oecd_net']
+            st.metric("Net Position", f"{net_oecd:.2e}",
+                     delta="surplus" if net_oecd > 0 else "deficit",
+                     delta_color="normal" if net_oecd > 0 else "inverse")
+
+        with col2:
+            st.markdown("#### Non-OECD Countries (South)")
+            st.metric("XCR Earned", f"{equity['non_oecd_earned']:.2e}")
+            st.metric("XCR Purchased (CQE)", f"{equity['non_oecd_purchased']:.2e}")
+            net_non_oecd = equity['non_oecd_net']
+            st.metric("Net Position", f"{net_non_oecd:.2e}",
+                     delta="surplus" if net_non_oecd > 0 else "deficit",
+                     delta_color="normal" if net_non_oecd > 0 else "inverse")
+
+        # Net wealth transfer
+        st.markdown("### Net Wealth Transfer")
+        transfer = equity['net_transfer_to_south']
+        transfer_usd = transfer * df.iloc[-1]['Market_Price']
+        direction = "North → South" if transfer > 0 else "South → North"
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("XCR Flow", f"{abs(transfer):.2e}", delta=direction)
+        with col2:
+            st.metric("USD Value", f"${abs(transfer_usd):.2e}",
+                     delta=f"At ${df.iloc[-1]['Market_Price']:.2f}/XCR")
+
+        # Visualization: OECD vs non-OECD flows
+        st.markdown("### XCR Flows by Group")
+
+        fig = go.Figure()
+
+        categories = ['OECD (North)', 'Non-OECD (South)']
+        earned = [equity['oecd_earned'], equity['non_oecd_earned']]
+        purchased = [equity['oecd_purchased'], equity['non_oecd_purchased']]
+
+        fig.add_trace(go.Bar(
+            name='XCR Earned (Projects)',
+            x=categories,
+            y=earned,
+            marker_color='#2ca02c'
+        ))
+
+        fig.add_trace(go.Bar(
+            name='XCR Purchased (CQE)',
+            x=categories,
+            y=purchased,
+            marker_color='#d62728'
+        ))
+
+        fig.update_layout(
+            barmode='group',
+            height=400,
+            yaxis_title="XCR Tokens",
+            showlegend=True
+        )
+
+        st.plotly_chart(fig, width='stretch')
+
+        # Country-level details
+        st.markdown("### Top Countries by Net XCR Position")
+
+        country_df = pd.DataFrame(equity['country_details'])
+        country_df['Net XCR'] = country_df['net_xcr']
+        country_df['OECD'] = country_df['oecd'].apply(lambda x: 'Yes' if x else 'No')
+        country_df['Historical Emissions (GtCO2)'] = country_df['historical_emissions_gtco2']
+        country_df['GDP ($T)'] = country_df['gdp_tril']
+
+        # Display top 20 by absolute net XCR
+        display_df = country_df[['country', 'OECD', 'Net XCR', 'Historical Emissions (GtCO2)', 'GDP ($T)']].head(20)
+
+        st.dataframe(display_df, width='stretch', height=400)
+
+        # Explanation
+        st.markdown("""
+        ---
+        **How Equity Works in GCR:**
+
+        1. **R-Value Differential**: South earns more XCR per tonne (CDR: R=1.0, North conventional: R=1.5+)
+        2. **CQE Burden Sharing**: North contributes more to defend price floor (GDP-proportional)
+        3. **Project Geography**: CDR/nature-based projects predominantly in South
+
+        **Result**: Natural wealth transfer from North to South for climate action.
+
+        See `EQUITY_ANALYSIS.md` for detailed explanation.
+        """)
+
+    # Tab 6: Data Table
+    with tab6:
         st.subheader("Simulation Data")
 
         # Display controls
