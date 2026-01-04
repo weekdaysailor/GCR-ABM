@@ -938,7 +938,9 @@ class InvestorMarket:
 
     def update_sentiment(self, cea_warning: bool, global_inflation: float,
                         inflation_target: float = 0.02,
-                        co2_level: float = None, initial_co2: float = None):
+                        co2_level: float = None, initial_co2: float = None,
+                        forward_guidance: float = None,
+                        price_floor_delta: float = 0.0):
         """Update investor sentiment based on system state
 
         Sentiment ranges from 0.0 (panic) to 1.0 (full trust).
@@ -988,6 +990,17 @@ class InvestorMarket:
             elif co2_reduction > 0.1:  # Moderate progress (>0.1 ppm)
                 bonus_recovery = 0.005  # 0.5% bonus
                 self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * bonus_recovery)
+
+        # Positive signal: stronger forward guidance on climate damages
+        if forward_guidance is not None:
+            fg_boost = min(0.2, max(0.0, forward_guidance) * 0.2)  # up to +20% of remaining gap
+            self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * fg_boost)
+
+        # Positive signal: price floor revised upward (policy confidence)
+        if price_floor_delta and price_floor_delta > 0:
+            # Normalize delta to percentage change
+            floor_boost = min(0.25, 5.0 * (price_floor_delta / max(self.price_floor, 1e-6)))
+            self.sentiment = min(1.0, self.sentiment + (1.0 - self.sentiment) * floor_boost)
 
         # Ensure minimum sentiment (prevent total collapse)
         self.sentiment = max(0.1, self.sentiment)
