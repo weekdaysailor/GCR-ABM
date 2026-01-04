@@ -39,7 +39,7 @@ st.markdown("**Agent-Based Model** simulating carbon sequestration economy with 
 # Sidebar - Simulation Parameters
 st.sidebar.header("Simulation Parameters")
 
-years = st.sidebar.slider("Simulation Years", min_value=10, max_value=100, value=50, step=10)
+years = st.sidebar.slider("Simulation Years", min_value=10, max_value=200, value=100, step=10)
 price_floor = st.sidebar.slider("XCR Price Floor (Initial, USD)", min_value=0, max_value=999, value=100, step=10)
 adoption_rate = st.sidebar.slider("GCR Adoption Rate (countries/year)", min_value=0.0, max_value=10.0, value=3.5, step=0.5)
 inflation_target = st.sidebar.slider("Inflation Target (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.25) / 100.0
@@ -54,6 +54,8 @@ years_to_full_capacity = st.sidebar.slider("Years to Full Capacity", min_value=1
 st.sidebar.markdown("---")
 enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
 random_seed = st.sidebar.number_input("Random Seed (0 = random)", min_value=0, max_value=10000, value=42)
+monte_carlo_runs = st.sidebar.slider("Monte Carlo Runs", min_value=1, max_value=20, value=1, step=1,
+                                     help="Number of ensemble runs (aggregates results when >1)")
 
 run_button = st.sidebar.button("Run Simulation", type="primary", width='stretch')
 
@@ -61,26 +63,63 @@ run_button = st.sidebar.button("Run Simulation", type="primary", width='stretch'
 if 'df' not in st.session_state:
     st.session_state.df = None
     st.session_state.sim = None
+    st.session_state.agg = None
 
 # Run simulation
 if run_button:
     with st.spinner("Running simulation..."):
-        if random_seed > 0:
-            np.random.seed(random_seed)
+        dfs = []
+        sims = []
+        base_seed = random_seed if random_seed > 0 else None
+        for i in range(monte_carlo_runs):
+            if base_seed is not None:
+                np.random.seed(base_seed + i)
+            sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor,
+                                     adoption_rate=adoption_rate, inflation_target=inflation_target,
+                                     xcr_start_year=xcr_start_year, years_to_full_capacity=years_to_full_capacity)
+            df_run = sim.run_simulation()
+            df_run["run"] = i
+            dfs.append(df_run)
+            sims.append(sim)
 
-        sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor,
-                                 adoption_rate=adoption_rate, inflation_target=inflation_target,
-                                 xcr_start_year=xcr_start_year, years_to_full_capacity=years_to_full_capacity)
-        df = sim.run_simulation()
+        df_all = pd.concat(dfs, ignore_index=True)
 
-        st.session_state.df = df
-        st.session_state.sim = sim
-        st.success(f"Simulation complete! {years} years simulated.")
+        if monte_carlo_runs > 1:
+            # Aggregate across runs (mean + 10/90 quantiles for key metrics)
+            agg = df_all.groupby("Year").agg({
+                "CO2_ppm": ["mean", lambda x: x.quantile(0.1), lambda x: x.quantile(0.9)],
+                "BAU_CO2_ppm": "mean",
+                "Sequestration_Tonnes": "mean",
+                "CDR_Sequestration_Tonnes": "mean",
+                "Conventional_Mitigation_Tonnes": "mean",
+                "Temperature_Anomaly": ["mean", lambda x: x.quantile(0.1), lambda x: x.quantile(0.9)]
+            })
+            agg.columns = ["CO2_mean", "CO2_p10", "CO2_p90", "BAU_CO2_mean", "Seq_mean",
+                           "CDR_seq_mean", "Conv_seq_mean", "Temp_mean", "Temp_p10", "Temp_p90"]
+            agg = agg.reset_index()
+        else:
+            agg = None
+
+        st.session_state.df = df_all
+        st.session_state.sim = sims[-1]
+        st.session_state.agg = agg
+        st.success(f"Simulation complete! {years} years simulated across {monte_carlo_runs} run(s).")
 
 # Display results if available
 if st.session_state.df is not None:
-    df = st.session_state.df
+    df_all = st.session_state.df
     sim = st.session_state.sim
+    agg = st.session_state.agg
+    # Use aggregated view for climate when multi-run; keep a single-run slice for project-level metrics
+    multi_run = agg is not None
+    df_single = df_all[df_all["run"] == 0] if "run" in df_all.columns else df_all
+    df_climate = agg if multi_run else df_single
+    if multi_run:
+        df_climate = df_climate.copy()
+        df_climate["CO2_Avoided"] = df_climate["BAU_CO2_mean"] - df_climate["CO2_mean"]
+        df_climate["CO2_ppm"] = df_climate["CO2_mean"]
+        df_climate["BAU_CO2_ppm"] = df_climate["BAU_CO2_mean"]
+    df = df_climate
 
     # Summary Metrics
     st.header("📊 Summary Metrics")
@@ -88,7 +127,7 @@ if st.session_state.df is not None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        co2_reduction = 420.0 - df.iloc[-1]['CO2_ppm']
+        co2_reduction = 420.0 - df_climate.iloc[-1]['CO2_ppm']
         st.metric(
             "CO2 Reduction",
             f"{co2_reduction:.2f} ppm",
@@ -96,7 +135,7 @@ if st.session_state.df is not None:
         )
 
     with col2:
-        co2_avoided = df.iloc[-1]['CO2_Avoided']
+        co2_avoided = df_climate.iloc[-1]['CO2_Avoided']
         st.metric(
             "CO2 Avoided vs BAU",
             f"{co2_avoided:.2f} ppm",
@@ -106,23 +145,23 @@ if st.session_state.df is not None:
     with col3:
         st.metric(
             "Final XCR Supply",
-            f"{df.iloc[-1]['XCR_Supply']:.2e}",
-            delta=f"{df.iloc[-1]['XCR_Minted']:.2e} last year"
+            f"{df_single.iloc[-1]['XCR_Supply']:.2e}",
+            delta=f"{df_single.iloc[-1]['XCR_Minted']:.2e} last year"
         )
 
     with col4:
         st.metric(
             "Active Countries",
-            f"{int(df.iloc[-1]['Active_Countries'])}",
-            delta=f"Started with {int(df.iloc[0]['Active_Countries'])}"
+            f"{int(df_single.iloc[-1]['Active_Countries'])}",
+            delta=f"Started with {int(df_single.iloc[0]['Active_Countries'])}"
         )
 
     col5, col6, col7, col8 = st.columns(4)
 
     with col5:
-        operational = int(df.iloc[-1]['Projects_Operational'])
-        development = int(df.iloc[-1]['Projects_Development'])
-        failed = int(df.iloc[-1]['Projects_Failed'])
+        operational = int(df_single.iloc[-1]['Projects_Operational'])
+        development = int(df_single.iloc[-1]['Projects_Development'])
+        failed = int(df_single.iloc[-1]['Projects_Failed'])
         st.metric(
             "Project Status",
             f"{operational} operational",
@@ -132,23 +171,23 @@ if st.session_state.df is not None:
     with col6:
         st.metric(
             "Market Price",
-            f"${df.iloc[-1]['Market_Price']:.2f}",
-            delta=f"Floor: ${df.iloc[-1]['Price_Floor']:.0f}"
+            f"${df_single.iloc[-1]['Market_Price']:.2f}",
+            delta=f"Floor: ${df_single.iloc[-1]['Price_Floor']:.0f}"
         )
 
     with col7:
         st.metric(
             "Final Inflation",
-            f"{df.iloc[-1]['Inflation']*100:.2f}%",
-            delta=f"{(df.iloc[-1]['Inflation']-inflation_target)*100:.2f}pp vs target",
+            f"{df_single.iloc[-1]['Inflation']*100:.2f}%",
+            delta=f"{(df_single.iloc[-1]['Inflation']-inflation_target)*100:.2f}pp vs target",
             delta_color="inverse"
         )
 
     with col8:
         st.metric(
             "CQE Budget",
-            f"${df.iloc[-1]['CQE_Budget_Total']/1e12:.2f}T",
-            delta=f"Started ${df.iloc[0]['CQE_Budget_Total']/1e12:.2f}T"
+            f"${df_single.iloc[-1]['CQE_Budget_Total']/1e12:.2f}T",
+            delta=f"Started ${df_single.iloc[0]['CQE_Budget_Total']/1e12:.2f}T"
         )
 
     # Tabs for different views
@@ -173,11 +212,12 @@ if st.session_state.df is not None:
             specs=[[{"secondary_y": False}], [{"secondary_y": True}]]
         )
 
+        df_tab = df_climate
         # BAU CO2 levels (Business As Usual - no intervention)
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['BAU_CO2_ppm'],
+                x=df_tab['Year'],
+                y=df_tab['BAU_CO2_ppm'],
                 name="BAU (No GCR)",
                 line=dict(color='#7f7f7f', width=2, dash='dot'),
                 fill='tozeroy',
@@ -186,11 +226,36 @@ if st.session_state.df is not None:
             row=1, col=1
         )
 
-        # GCR CO2 levels
+        # GCR CO2 levels (with optional quantile band)
+        if multi_run and {"CO2_p10", "CO2_p90"}.issubset(df_tab.columns):
+            fig.add_trace(
+                go.Scatter(
+                    x=df_tab['Year'],
+                    y=df_tab['CO2_p90'],
+                    name="CO2 90th",
+                    line=dict(color='rgba(44,160,44,0.3)', width=0),
+                    showlegend=False
+                ),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=df_tab['Year'],
+                    y=df_tab['CO2_p10'],
+                    name="CO2 10-90%",
+                    line=dict(color='rgba(44,160,44,0.3)', width=0),
+                    fill='tonexty',
+                    fillcolor='rgba(44,160,44,0.15)',
+                    hoverinfo="skip",
+                    showlegend=True,
+                    legendgroup="CO2_band"
+                ),
+                row=1, col=1
+            )
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['CO2_ppm'],
+                x=df_tab['Year'],
+                y=df_tab['CO2_ppm'],
                 name="With GCR",
                 line=dict(color='#2ca02c', width=3),
                 fill='tozeroy',
@@ -211,8 +276,8 @@ if st.session_state.df is not None:
         # Sequestration by channel (stacked)
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
-                y=df['CDR_Sequestration_Tonnes'],
+                x=df_tab['Year'],
+                y=df_tab['CDR_Sequestration_Tonnes'] if not multi_run else df_tab['CDR_seq_mean'],
                 name="CDR",
                 marker_color='#1f77b4',
                 opacity=0.8
@@ -221,8 +286,8 @@ if st.session_state.df is not None:
         )
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
-                y=df['Conventional_Mitigation_Tonnes'],
+                x=df_tab['Year'],
+                y=df_tab['Conventional_Mitigation_Tonnes'] if not multi_run else df_tab['Conv_seq_mean'],
                 name="Conventional",
                 marker_color='#2ca02c',
                 opacity=0.7
@@ -234,7 +299,7 @@ if st.session_state.df is not None:
         fig.add_trace(
             go.Scatter(
                 x=df['Year'],
-                y=df['Projects_Operational'],
+                y=df_single['Projects_Operational'],
                 name="Operational Projects",
                 line=dict(color='#ff7f0e', width=2, dash='dot'),
                 yaxis='y3'
@@ -244,7 +309,7 @@ if st.session_state.df is not None:
         )
 
         fig.update_xaxes(title_text="Year", row=2, col=1)
-        fig.update_yaxes(title_text="CO2 (ppm)", row=1, col=1)
+        fig.update_yaxes(title_text="CO2 (ppm)", row=1, col=1, range=[200, None])
         fig.update_yaxes(title_text="Tonnes CO2e/year", row=2, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Project Count", row=2, col=1, secondary_y=True)
 
@@ -256,23 +321,35 @@ if st.session_state.df is not None:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            final_co2_avoided = df.iloc[-1]['CO2_Avoided']
+            final_co2_avoided = df_climate.iloc[-1]['CO2_Avoided']
             st.metric("Final CO2 Avoided", f"{final_co2_avoided:.2f} ppm")
 
         with col2:
-            total_sequestration = df['Sequestration_Tonnes'].sum()
+            if multi_run and "Seq_mean" in df_climate.columns:
+                total_sequestration = df_climate['Seq_mean'].sum()
+            else:
+                total_sequestration = df_single['Sequestration_Tonnes'].sum()
             st.metric("Total Sequestration", f"{total_sequestration:.2e} tonnes")
 
         with col3:
-            bau_growth = ((df.iloc[-1]['BAU_CO2_ppm'] / 420.0) - 1) * 100
+            bau_growth = ((df_climate.iloc[-1]['BAU_CO2_ppm'] / 420.0) - 1) * 100
             st.metric("BAU CO2 Growth", f"+{bau_growth:.1f}%")
         col4, col5 = st.columns(2)
         with col4:
-            cdr_total = df['CDR_Sequestration_Tonnes'].sum()
+            if multi_run and "CDR_seq_mean" in df_climate.columns:
+                cdr_total = df_climate['CDR_seq_mean'].sum()
+            else:
+                cdr_total = df_single['CDR_Sequestration_Tonnes'].sum()
             st.metric("CDR Delivered", f"{cdr_total:.2e} tonnes")
         with col5:
-            conv_total = df['Conventional_Mitigation_Tonnes'].sum()
+            if multi_run and "Conv_seq_mean" in df_climate.columns:
+                conv_total = df_climate['Conv_seq_mean'].sum()
+            else:
+                conv_total = df_single['Conventional_Mitigation_Tonnes'].sum()
             st.metric("Conventional Delivered", f"{conv_total:.2e} tonnes")
+
+        # After climate view, switch back to single-run dataframe for detailed tabs
+        df = df_single
 
     # Tab 2: XCR Economics
     with tab2:
@@ -607,6 +684,7 @@ if st.session_state.df is not None:
     # Tab 4: Projects
     with tab4:
         st.subheader("Project Portfolio Analysis")
+        df_proj = df_single
 
         fig = make_subplots(
             rows=2, cols=2,
@@ -627,8 +705,8 @@ if st.session_state.df is not None:
         # Project counts over time
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['Projects_Total'],
+                x=df_proj['Year'],
+                y=df_proj['Projects_Total'],
                 name="Total Projects",
                 line=dict(color='#1f77b4', width=2),
             ),
@@ -637,8 +715,8 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['Projects_Operational'],
+                x=df_proj['Year'],
+                y=df_proj['Projects_Operational'],
                 name="Operational",
                 line=dict(color='#2ca02c', width=2),
                 fill='tozeroy',
@@ -649,8 +727,8 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['Projects_Development'],
+                x=df_proj['Year'],
+                y=df_proj['Projects_Development'],
                 name="In Development",
                 line=dict(color='#ff7f0e', width=2, dash='dot'),
             ),
@@ -659,8 +737,8 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['Projects_Failed'],
+                x=df_proj['Year'],
+                y=df_proj['Projects_Failed'],
                 name="Failed",
                 line=dict(color='#d62728', width=2, dash='dash'),
             ),
@@ -670,8 +748,8 @@ if st.session_state.df is not None:
         # Sequestration by year (bar chart)
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
-                y=df['Sequestration_Tonnes'],
+                x=df_proj['Year'],
+                y=df_proj['Sequestration_Tonnes'],
                 name="Sequestration",
                 marker_color='#2ca02c',
                 showlegend=False
