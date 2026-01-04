@@ -1197,6 +1197,7 @@ class GCR_ABM_Simulation:
         self.carbon_cycle = CarbonCycle(initial_co2_ppm=self.co2_level)
         self.co2_level = self.carbon_cycle.co2_ppm  # Keep ppm aligned with carbon cycle state
         self.land_use_change_gtc = self.carbon_cycle.params.land_use_change_gtc  # Exogenous LUC emissions
+        self.bau_carbon_cycle = CarbonCycle(initial_co2_ppm=self.co2_level, params=self.carbon_cycle.params)
 
         # BAU (Business As Usual) emissions - flow rate that peaks then declines
         # Real-world emissions: ~40 GtCO2/year (36 fossil + 4 land use) today
@@ -1387,7 +1388,7 @@ class GCR_ABM_Simulation:
     def run_simulation(self):
         """Execute multi-agent simulation"""
         results = []
-        bau_co2 = 420.0  # BAU starting point
+        bau_co2 = self.bau_carbon_cycle.co2_ppm  # BAU trajectory via carbon cycle
 
         for year in range(self.years):
             self.step = year
@@ -1628,9 +1629,13 @@ class GCR_ABM_Simulation:
                 0.0, self.bau_emissions_gt_per_year * (1 + bau_growth_rate)
             )
 
-            # 9. Update BAU trajectory (no intervention scenario)
-            # BAU trajectory uses same emissions flow but no sequestration
-            bau_co2 += bau_increase_ppm
+            # 9. Update BAU trajectory (no intervention scenario, with natural sinks)
+            bau_climate = self.bau_carbon_cycle.step(
+                emissions_gtc=bau_emissions_gtc,
+                sequestration_gtc=0.0,
+                land_use_change_gtc=self.land_use_change_gtc
+            )
+            bau_co2 = bau_climate["CO2_ppm"]
 
             # Calculate transparency metrics for this year
             # Technology costs (learning-adjusted)
