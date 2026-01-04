@@ -379,7 +379,7 @@ class CentralBankAlliance:
         - CQE backstop capacity: 10-20% of market
         - We use 15% ratio to sit mid-range of the 10-20% target band
 
-        Budget is then apportioned by GDP among active countries.
+        Budget is capped by active GDP (2% of active GDP).
         """
         market_cap_budget = cumulative_private_capital * self.cqe_ratio
         active_gdp_tril = sum(country["gdp_tril"] for country in self.countries.values())
@@ -467,7 +467,7 @@ class ProjectsBroker:
         # Project scale damping (learning-by-doing curve)
         # Project size scales with cumulative deployment experience
         self.scale_damping_enabled = True
-        self.full_scale_deployment_gt = 250.0  # Faster path to full industrial scale
+        self.full_scale_deployment_gt = 200.0  # Moderated path to full industrial scale
 
         # Co-benefits pool: fraction of XCR held back for redistribution
         self.cobenefit_pool_fraction = 0.15  # 15% of minted XCR is reallocated via co-benefit scores
@@ -507,7 +507,7 @@ class ProjectsBroker:
         # Maximum annual sequestration capacity by channel (Gt/year)
         # Represents physical/technological limits on deployment scale
         self.max_capacity_gt_per_year = {
-            ChannelType.CDR: 100.0,  # DAC/NCC nearly unconstrained (soft limit)
+            ChannelType.CDR: 10.0,  # DAC/NCC upper bound
             ChannelType.CONVENTIONAL: 30.0,  # Earlier taper to force CDR reliance
             ChannelType.COBENEFITS: 50.0  # Nature-based solutions - large potential
         }
@@ -519,18 +519,18 @@ class ProjectsBroker:
         This links scale growth to actual learning-by-doing, not just calendar time.
 
         Project size scales with cumulative deployment:
-        - Early deployments: Pilot scale (0.5-5 MT/year)
+        - Early deployments: Pilot scale (0.7-7 MT/year)
         - Mid deployments: Commercial scale (5-30 MT/year)
         - Late deployments: Industrial scale (30-100 MT/year)
 
-        Returns multiplier from 0.05 (5% scale) to 1.0 (full scale)
+        Returns multiplier from 0.07 (7% scale) to 1.0 (full scale)
 
-        Deployment milestones:
-        - 0-10 Gt: 5-15% scale (pilot projects)
-        - 10-100 Gt: 15-40% scale (early commercial)
-        - 100-300 Gt: 40-70% scale (commercial)
-        - 300-500 Gt: 70-95% scale (industrial)
-        - 500+ Gt: 100% scale (full industrial)
+        Deployment milestones (approx):
+        - 0-20 Gt: 7-20% scale (pilot projects)
+        - 20-80 Gt: 20-60% scale (early commercial)
+        - 80-160 Gt: 60-90% scale (commercial)
+        - 160-200 Gt: 90-100% scale (industrial)
+        - 200+ Gt: 100% scale (full industrial)
         """
         if not self.scale_damping_enabled:
             return 1.0
@@ -542,16 +542,16 @@ class ProjectsBroker:
             return 1.0  # Full scale
 
         # Sigmoid curve for smooth scaling
-        # Maps 0 Gt → 0.05, 500 Gt → 1.0
-        # Inflection point at 150 Gt (mid-commercial)
-        midpoint = self.full_scale_deployment_gt * 0.3  # 150 Gt
+        # Maps 0 Gt → 0.07, 200 Gt → 1.0
+        # Inflection point at 60 Gt (mid-commercial)
+        midpoint = self.full_scale_deployment_gt * 0.3  # 60 Gt
         steepness = 0.015  # Controls transition smoothness (adjusted for Gt scale)
 
         # Sigmoid: S(x) = 1 / (1 + e^(-k*(x - midpoint)))
         sigmoid = 1 / (1 + np.exp(-steepness * (total_deployment_gt - midpoint)))
 
         # Scale from 5% to 100%
-        min_scale = 0.05
+        min_scale = 0.07
         scale_damper = min_scale + (1.0 - min_scale) * sigmoid
 
         return scale_damper
@@ -649,22 +649,15 @@ class ProjectsBroker:
         )
         return total_tonnes / 1e9  # Convert tonnes to Gt
 
-    def _calculate_project_capacity(self, channel: ChannelType, current_co2_ppm: float, current_inflation: float = 0.02) -> int:
-        """Calculate how many projects to initiate for this channel this year
+    def _calculate_project_capacity(self, channel: ChannelType, current_co2_ppm: float, current_inflation: float = 0.02) -> float:
+        """Calculate climate urgency multiplier for project initiation
+
+        Returns a 0.0-1.0 factor applied to capital-limited project counts.
 
         Scales with:
-        1. Number of active countries (2 projects per country per channel)
-        2. Climate urgency (reduces as we approach 350 ppm target)
-        3. Realized inflation (high inflation → taper earlier & more aggressively)
-
-        Caps at 50 projects per channel to prevent unrealistic explosion.
+        1. Climate urgency (reduces as we approach 350 ppm target)
+        2. Realized inflation (high inflation → taper earlier & more aggressively)
         """
-        active_count = len(self.countries)
-        projects_per_country = 2  # Tunable parameter
-        max_per_channel = 50  # Safety cap
-
-        # Calculate base capacity
-        base_capacity = min(active_count * projects_per_country, max_per_channel)
 
         # Apply inflation-adjusted climate urgency factor
         # High inflation → Start tapering earlier and more aggressively
@@ -712,10 +705,7 @@ class ProjectsBroker:
             # Below target: minimal maintenance only
             urgency_factor = 0.02
 
-        # Apply urgency factor and round to integer
-        adjusted_capacity = int(base_capacity * urgency_factor)
-
-        return max(adjusted_capacity, 0)  # Ensure non-negative
+        return max(urgency_factor, 0.0)
 
     def _select_country(self, channel: ChannelType) -> str:
         """Select country for project based on channel preferences
@@ -793,9 +783,20 @@ class ProjectsBroker:
 
             if revenue_per_tonne >= marginal_cost:
                 # Profitable - initiate multiple projects
-                # Calculate how many projects to initiate for this channel
-                # (scales down as we approach climate target, inflation-adjusted)
-                num_projects = self._calculate_project_capacity(channel, current_co2_ppm, current_inflation)
+                # Climate urgency factor (0-1) scales capital-limited capacity
+                urgency_factor = self._calculate_project_capacity(channel, current_co2_ppm, current_inflation)
+
+                # Estimate how many projects available capital and capacity can support
+                scale_damper = self.calculate_project_scale_damper()
+                expected_base_seq = 5.5e7  # Expected base scale (10-100M tonnes avg)
+                min_base_seq = 1e7  # Minimum base scale
+                expected_seq = expected_base_seq * scale_damper
+                min_seq = min_base_seq * scale_damper
+
+                max_by_capital = int(remaining_capital / max(marginal_cost * expected_seq, 1.0))
+                max_by_capacity = int((remaining_capacity_gt * 1e9) / max(min_seq, 1.0))
+                max_projects = max(min(max_by_capital, max_by_capacity), 0)
+                num_projects = int(max_projects * urgency_factor)
 
                 # Inner loop: create multiple projects for this channel
                 for _ in range(num_projects):
@@ -813,9 +814,8 @@ class ProjectsBroker:
 
                     # Apply scale damping (learning-by-doing curve)
                     # Scale increases as industry gains deployment experience
-                    # Early deployments: pilot scale (5% → 0.5-5 MT/year)
+                    # Early deployments: pilot scale (7% → 0.7-7 MT/year)
                     # Late deployments: industrial scale (100% → 10-100 MT/year)
-                    scale_damper = self.calculate_project_scale_damper()
                     annual_seq = base_annual_seq * scale_damper
                     annual_seq = min(annual_seq, remaining_capacity_gt * 1e9)
 
@@ -1021,6 +1021,8 @@ class CapitalMarket:
         self.target_co2 = target_co2
         self.cumulative_capital_inflow = 0.0  # Total capital deployed (USD)
         self.cumulative_capital_outflow = 0.0  # Total capital withdrawn (USD)
+        self.seed_capital_usd = 2e10  # Bootstrap inflow for early-stage market formation
+        self.seed_market_cap_usd = 5e10  # Seed applies while market cap is small
 
     def calculate_forward_guidance(self, current_co2: float, year: int,
                                    total_years: int, roadmap_gap: float) -> float:
@@ -1091,16 +1093,23 @@ class CapitalMarket:
 
         # Market cap estimate (using floor as conservative price)
         # Floor a minimum to allow early-stage capital flows before supply exists.
-        market_cap = max(xcr_supply * price_floor, 1e9)
+        observed_market_cap = xcr_supply * price_floor
+        market_cap = max(observed_market_cap, 1e9)
 
         # Demand drivers (all 0-1 or multiplicative)
         combined_attractiveness = forward_guidance * inflation_hedge * sentiment
 
         # Net capital flow
-        # - combined_attractiveness > 0.5 → inflow
-        # - combined_attractiveness < 0.5 → outflow
+        # - combined_attractiveness > 0.4 → inflow
+        # - combined_attractiveness < 0.4 → outflow
         # - Scale by market cap and turnover rate
-        net_capital_flow = market_cap * base_turnover_rate * (combined_attractiveness - 0.5) * 2
+        net_capital_flow = market_cap * base_turnover_rate * (combined_attractiveness - 0.4) * 2
+
+        # Seed capital for early market formation (pre-liquidity bootstrap)
+        seed_inflow = 0.0
+        if observed_market_cap < self.seed_market_cap_usd:
+            seed_inflow = self.seed_capital_usd * max(0.2, forward_guidance)
+            net_capital_flow = max(net_capital_flow, seed_inflow)
 
         return net_capital_flow
 
@@ -1189,11 +1198,40 @@ class Auditor:
 # ============================================================================
 
 class GCR_ABM_Simulation:
-    """Main simulation coordinating all agents"""
+    """Main simulation coordinating all agents
+
+    Supports both rule-based and LLM-powered agents for realistic behavior modeling.
+    """
 
     def __init__(self, years: int = 50, enable_audits: bool = True, price_floor: float = 100.0,
                  adoption_rate: float = 3.5, inflation_target: float = 0.02,
-                 xcr_start_year: int = 0, years_to_full_capacity: int = 5):
+                 xcr_start_year: int = 0, years_to_full_capacity: int = 5,
+                 cdr_learning_rate: float = 0.20, conventional_learning_rate: float = 0.12,
+                 scale_full_deployment_gt: float = 200.0,
+                 # LLM agent parameters
+                 llm_enabled: bool = False,
+                 llm_model: str = "llama3.2",
+                 llm_cache_mode: str = "read_write",
+                 llm_agents: list = None):
+        """
+        Initialize GCR ABM simulation.
+
+        Args:
+            years: Simulation duration
+            enable_audits: Enable project auditing
+            price_floor: Initial XCR price floor (USD)
+            adoption_rate: Countries joining per year
+            inflation_target: Target inflation rate
+            xcr_start_year: Year when XCR system starts
+            years_to_full_capacity: Institutional ramp-up period
+            cdr_learning_rate: CDR technology learning rate
+            conventional_learning_rate: Conventional tech learning rate
+            scale_full_deployment_gt: Full-scale deployment threshold for scale damping (Gt)
+            llm_enabled: Use LLM-powered agents (requires Ollama)
+            llm_model: Ollama model name (llama3.2, mistral, etc.)
+            llm_cache_mode: Cache mode (disabled, read_write, read_only, write_only)
+            llm_agents: List of agents to use LLM for ['investor', 'capital', 'cea', 'central_bank']
+        """
         self.years = years
         self.enable_audits = enable_audits
         self.price_floor = price_floor
@@ -1202,6 +1240,13 @@ class GCR_ABM_Simulation:
         self.xcr_start_year = xcr_start_year  # Year when XCR system starts
         self.years_to_full_capacity = years_to_full_capacity  # Ramp-up period
         self.step = 0
+
+        # LLM configuration
+        self.llm_enabled = llm_enabled
+        self.llm_model = llm_model
+        self.llm_cache_mode = llm_cache_mode
+        self.llm_agents = llm_agents or ['investor', 'capital', 'cea', 'central_bank']
+        self.llm_engine = None
 
         # Global state
         self.co2_level = 420.0  # ppm
@@ -1296,12 +1341,84 @@ class GCR_ABM_Simulation:
         # Start with 5 founding countries active (USA, Germany, Brazil, Indonesia, Kenya)
         self.countries = {k: v for k, v in self.all_countries.items() if v["active"]}
 
-        # Initialize agents
-        self.cea = CEA(target_co2_ppm=350.0, initial_co2_ppm=420.0, inflation_target=self.inflation_target)
-        self.central_bank = CentralBankAlliance(self.countries, price_floor=price_floor)
+        # Initialize LLM engine if enabled
+        if self.llm_enabled:
+            try:
+                from llm_engine import LLMEngine, CacheMode
+                cache_mode_map = {
+                    'disabled': CacheMode.DISABLED,
+                    'read_write': CacheMode.READ_WRITE,
+                    'read_only': CacheMode.READ_ONLY,
+                    'write_only': CacheMode.WRITE_ONLY
+                }
+                self.llm_engine = LLMEngine(
+                    model=self.llm_model,
+                    cache_mode=cache_mode_map.get(self.llm_cache_mode, CacheMode.READ_WRITE)
+                )
+                if not self.llm_engine.is_available:
+                    print(f"Warning: Ollama not available. LLM agents will use rule-based fallback.")
+            except ImportError as e:
+                print(f"Warning: LLM engine not available ({e}). Using rule-based agents.")
+                self.llm_engine = None
+                self.llm_enabled = False
+
+        # Initialize agents (LLM or rule-based)
+        if self.llm_enabled and self.llm_engine:
+            from llm_agents import (
+                CEA_LLM, CentralBankAllianceLLM,
+                InvestorMarketLLM, CapitalMarketLLM
+            )
+
+            # CEA agent
+            if 'cea' in self.llm_agents:
+                self.cea = CEA_LLM(
+                    llm_engine=self.llm_engine,
+                    target_co2_ppm=350.0,
+                    initial_co2_ppm=420.0,
+                    inflation_target=self.inflation_target
+                )
+            else:
+                self.cea = CEA(target_co2_ppm=350.0, initial_co2_ppm=420.0, inflation_target=self.inflation_target)
+
+            # Central Bank agent
+            if 'central_bank' in self.llm_agents:
+                self.central_bank = CentralBankAllianceLLM(
+                    llm_engine=self.llm_engine,
+                    countries=self.countries,
+                    price_floor=price_floor
+                )
+            else:
+                self.central_bank = CentralBankAlliance(self.countries, price_floor=price_floor)
+
+            # Investor Market agent
+            if 'investor' in self.llm_agents:
+                self.investor_market = InvestorMarketLLM(
+                    llm_engine=self.llm_engine,
+                    price_floor=price_floor
+                )
+            else:
+                self.investor_market = InvestorMarket(price_floor=price_floor)
+
+            # Capital Market agent
+            if 'capital' in self.llm_agents:
+                self.capital_market = CapitalMarketLLM(
+                    llm_engine=self.llm_engine
+                )
+            else:
+                self.capital_market = CapitalMarket(initial_co2=420.0, target_co2=350.0)
+        else:
+            # Rule-based agents (default)
+            self.cea = CEA(target_co2_ppm=350.0, initial_co2_ppm=420.0, inflation_target=self.inflation_target)
+            self.central_bank = CentralBankAlliance(self.countries, price_floor=price_floor)
+            self.investor_market = InvestorMarket(price_floor=price_floor)
+            self.capital_market = CapitalMarket(initial_co2=420.0, target_co2=350.0)
+
+        # ProjectsBroker and Auditor always rule-based
         self.projects_broker = ProjectsBroker(self.countries)
-        self.investor_market = InvestorMarket(price_floor=price_floor)
-        self.capital_market = CapitalMarket(initial_co2=420.0, target_co2=350.0)
+        # Allow learning-rate overrides for scenario tuning
+        self.projects_broker.learning_rates[ChannelType.CDR] = cdr_learning_rate
+        self.projects_broker.learning_rates[ChannelType.CONVENTIONAL] = conventional_learning_rate
+        self.projects_broker.full_scale_deployment_gt = scale_full_deployment_gt
         self.auditor = Auditor(error_rate=0.02)
 
     def chaos_monkey(self):
@@ -1365,7 +1482,7 @@ class GCR_ABM_Simulation:
             self.all_countries[name]["adoption_year"] = current_year
             self.countries[name] = self.all_countries[name]
             newly_adopted.append(name)
-            # Note: CQE budget now calculated dynamically from private capital (20% ratio)
+            # Note: CQE budget now calculated dynamically from private capital (15% ratio)
             print(f"[Year {current_year}] {name} joined GCR (GDP: ${self.all_countries[name]['gdp_tril']}T)")
 
         # CQE budget now updated in main simulation loop based on cumulative private capital
@@ -1428,17 +1545,22 @@ class GCR_ABM_Simulation:
             else:
                 newly_adopted = []  # No adoption before XCR starts
 
-            # 1. Chaos monkey - stochastic shocks
-            self.chaos_monkey()
+            # 1. Inflation dynamics (only after GCR starts)
+            if system_active:
+                # Chaos monkey - stochastic shocks
+                self.chaos_monkey()
 
-            # 1b. Inflation correction toward 2% target
-            # Central banks actively manage inflation with interest rates
-            inflation_gap = self.global_inflation - self.inflation_target
-            correction_rate = 0.25  # 25% correction per year (was 10%)
-            # Stronger correction when far from target
-            if abs(inflation_gap) > 0.02:  # More than 2pp away
-                correction_rate = 0.4  # 40% when inflation problematic
-            self.global_inflation -= inflation_gap * correction_rate
+                # Inflation correction toward target
+                # Central banks actively manage inflation with interest rates
+                inflation_gap = self.global_inflation - self.inflation_target
+                correction_rate = 0.25  # 25% correction per year (was 10%)
+                # Stronger correction when far from target
+                if abs(inflation_gap) > 0.02:  # More than 2pp away
+                    correction_rate = 0.4  # 40% when inflation problematic
+                self.global_inflation -= inflation_gap * correction_rate
+            else:
+                # No GCR policy effects before the start year
+                self.global_inflation = 0.0
 
             # 2. Update investor sentiment
             price_floor_prev = self.price_floor
