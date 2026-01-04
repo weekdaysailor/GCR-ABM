@@ -95,7 +95,8 @@ class CEA:
         return self.initial_co2_ppm - (self.initial_co2_ppm - self.target_co2_ppm) * progress
 
     def adjust_price_floor(self, current_co2_ppm: float, current_floor: float,
-                          year: int, total_years: int) -> tuple[float, bool]:
+                          year: int, total_years: int, current_inflation: float = 0.02,
+                          temperature_anomaly: float = 1.2) -> tuple[float, bool]:
         """Adjust price floor based on roadmap progress per Chen paper
 
         From Chen (2025):
@@ -137,6 +138,18 @@ class CEA:
 
             # Calculate new locked-in yield for next 10 years
             new_yield = (base_yield + performance_adjustment) * peak_factor
+
+            # Inflation guard: damp yield if CPI is above target to reduce added pressure
+            if self.inflation_target > 0:
+                inflation_gap_ratio = max(0.0, current_inflation - self.inflation_target) / self.inflation_target
+                inflation_guard = max(0.25, 1.0 - 0.6 * inflation_gap_ratio)
+                new_yield *= inflation_guard
+
+            # Climate guard: if warming exceeds Paris guardrail, slow floor growth
+            if temperature_anomaly > 2.0:
+                new_yield *= 0.5
+            elif temperature_anomaly > 1.75:
+                new_yield *= 0.7
 
             # Limit yield to reasonable range (-3% to +10% per year)
             new_yield = np.clip(new_yield, -0.03, 0.10)
@@ -231,7 +244,12 @@ class CEA:
             budget_brake = 1.0 - (utilization - self.budget_brake_start) / span
             budget_brake = max(self.budget_brake_floor, budget_brake)
 
-        return min(ratio_brake, budget_brake)
+        # Inflation penalty directly slows minting when CPI exceeds target
+        inflation_penalty = 1.0
+        if inflation_ratio > 1.0:
+            inflation_penalty = max(0.2, 1.0 - 0.4 * (inflation_ratio - 1.0))
+
+        return min(ratio_brake, budget_brake) * inflation_penalty
 
     def update_policy(self, current_co2_ppm: float, market_cap_xcr: float,
                      total_cqe_budget: float, global_inflation: float,
@@ -407,7 +425,7 @@ class CentralBankAlliance:
 
             # M0 creation for buying XCR
             # Amount of fiat created = XCR bought × price
-            xcr_purchased = total_xcr_supply * intervention_strength * 0.01  # Buy up to 1% of supply
+            xcr_purchased = total_xcr_supply * intervention_strength * 0.05  # Buy up to 5% of supply
             fiat_created = xcr_purchased * self.price_floor_rcc
 
             # Check if this intervention would exceed annual budget
@@ -427,7 +445,11 @@ class CentralBankAlliance:
             # Uses active GDP as the scale for CPI impact.
             active_gdp_tril = sum(country["gdp_tril"] for country in self.countries.values())
             active_gdp_usd = active_gdp_tril * 1e12
-            inflation_impact = (fiat_created / active_gdp_usd) if active_gdp_usd > 0 else 0.0
+            inflation_impact = (fiat_created / active_gdp_usd) * 5 if active_gdp_usd > 0 else 0.0
+            # Ensure material signal when spending is non-trivial
+            if active_gdp_usd > 0 and (fiat_created / active_gdp_usd) > 0.001:
+                inflation_impact = max(inflation_impact, 0.0025)
+            inflation_impact = float(np.clip(inflation_impact, 0.0, 0.05))  # Cap at +5pp
 
             return price_support, inflation_impact, xcr_purchased
 
@@ -1446,7 +1468,9 @@ class GCR_ABM_Simulation:
                 self.co2_level,
                 self.price_floor,
                 year,
-                self.years
+                self.years,
+                current_inflation=self.global_inflation,
+                temperature_anomaly=self.carbon_cycle.temperature
             )
             # Update price floor in agents
             self.central_bank.price_floor_rcc = self.price_floor
