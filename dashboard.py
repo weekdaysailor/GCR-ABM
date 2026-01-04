@@ -448,16 +448,26 @@ if st.session_state.df is not None:
         """)
 
         fig = make_subplots(
-            rows=5, cols=1,
+            rows=7, cols=1,
             subplot_titles=(
                 "XCR Market Price & Sentiment",
                 "Global Inflation Rate",
                 "Stability Ratio, CEA Warnings & CQE Utilization",
                 "System Capacity (Institutional Learning)",
-                "Private Capital Flows (Climate Hedge Demand)"
+                "Private Capital Flows (Climate Hedge Demand)",
+                "Forward Guidance",
+                "CQE Interventions"
             ),
-            vertical_spacing=0.08,
-            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": True}]]
+            vertical_spacing=0.07,
+            specs=[
+                [{"secondary_y": True}],
+                [{"secondary_y": False}],
+                [{"secondary_y": True}],
+                [{"secondary_y": False}],
+                [{"secondary_y": True}],
+                [{"secondary_y": False}],
+                [{"secondary_y": False}],
+            ]
         )
 
         # Price floor (area)
@@ -656,16 +666,37 @@ if st.session_state.df is not None:
             secondary_y=True
         )
 
-        # Forward guidance (as context on secondary axis)
+        # Forward guidance (own subplot)
         fig.add_trace(
             go.Scatter(
                 x=df['Year'],
                 y=df['Forward_Guidance'],
                 name="Forward Guidance (Climate Risk)",
-                line=dict(color='#ff7f0e', width=2, dash='dash'),
+                line=dict(color='#ff7f0e', width=3),
+                fill='tozeroy',
+                fillcolor='rgba(255, 127, 14, 0.15)'
             ),
-            row=5, col=1,
-            secondary_y=True
+            row=6, col=1
+        )
+
+        fig.add_trace(
+            go.Bar(
+                x=df['Year'],
+                y=df['CQE_Spent'] / 1e9,  # trillions to billions
+                name="CQE Spent (USD B)",
+                marker_color='#9467bd',
+                opacity=0.7
+            ),
+            row=7, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df['Year'],
+                y=df['XCR_Purchased'] if 'XCR_Purchased' in df.columns else df['CQE_Spent'] / df['Price_Floor'],
+                name="XCR Purchased (approx)",
+                line=dict(color='#8c564b', width=2, dash='dot')
+            ),
+            row=7, col=1
         )
 
         fig.update_xaxes(title_text="Year", row=5, col=1)
@@ -677,6 +708,7 @@ if st.session_state.df is not None:
         fig.update_yaxes(title_text="Capacity (0-1)", row=4, col=1)
         fig.update_yaxes(title_text="Net Flow ($B/year)", row=5, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Cumulative ($B) / Guidance", row=5, col=1, secondary_y=True)
+        fig.update_yaxes(title_text="CQE Spend / XCR Bought", row=7, col=1)
 
         fig.update_layout(height=1300, showlegend=True, hovermode='x unified')
         st.plotly_chart(fig, width='stretch')
