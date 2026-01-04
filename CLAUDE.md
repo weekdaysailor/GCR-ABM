@@ -450,11 +450,12 @@ Year, CO2_ppm, BAU_CO2_ppm, CO2_Avoided, Inflation, XCR_Supply, XCR_Minted, XCR_
 - **CQE_Budget_Utilization**: Percentage of annual budget used (0.0-1.0, 1.0 = exhausted)
 
 **Transparency Columns** (for learning curves & policy):
-- **Technology Costs** (learning-adjusted): `CDR_Cost_Per_Tonne`, `Conventional_Cost_Per_Tonne`, `Cobenefits_Cost_Per_Tonne`
-- **Cumulative Deployment** (learning progress): `CDR_Cumulative_GtCO2`, `Conventional_Cumulative_GtCO2`, `Cobenefits_Cumulative_GtCO2`
-- **Policy Multipliers**: `CDR_Policy_Multiplier`, `Conventional_Policy_Multiplier`, `Cobenefits_Policy_Multiplier`
-- **R-Values**: `CDR_R_Base`, `CDR_R_Effective`, `Conventional_R_Base`, `Conventional_R_Effective`, `Cobenefits_R_Base`, `Cobenefits_R_Effective`
-- **Profitability**: `CDR_Profitability`, `Conventional_Profitability`, `Cobenefits_Profitability`
+- **Technology Costs** (learning-adjusted): `CDR_Cost_Per_Tonne`, `Conventional_Cost_Per_Tonne`
+- **Cumulative Deployment** (learning progress): `CDR_Cumulative_GtCO2`, `Conventional_Cumulative_GtCO2`
+- **Policy Multipliers**: `CDR_Policy_Multiplier`, `Conventional_Policy_Multiplier`
+- **R-Values**: `CDR_R_Base`, `CDR_R_Effective`, `Conventional_R_Base`, `Conventional_R_Effective`
+- **Profitability**: `CDR_Profitability`, `Conventional_Profitability`
+- **Co-benefit Bonus**: `Cobenefit_Bonus_XCR` (Robin Hood redistribution overlay, no additional tonnes)
 - **Capacity Constraints**: `Conventional_Capacity_Utilization`, `Conventional_Capacity_Available`
 
 All transparency columns are exported to CSV and visible in the dashboard tabs.
@@ -490,17 +491,18 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
   - Increase to allow more price floor defense before constraint activates
 
 **Learning Curve Parameters** (`ProjectsBroker.__init__()` - gcr_model.py:238):
-- **Learning rates**: CDR=20%, Conventional=12%, Co-benefits=8%
+- **Learning rates**: CDR=20%, Conventional=12%
   - Modify to explore optimistic/pessimistic technology scenarios
   - Higher learning rate = faster cost reduction
 - **Reference capacity**: Set on first deployment (used as baseline for learning calculations)
 - **Resource depletion rate**: Currently 1.5% cost increase per project
   - Balances learning curve gains with resource scarcity
+- **Co-benefit pool**: `cobenefit_pool_fraction` (0.15) holds back XCR for redistribution based on project co-benefit scores
 
 **Policy Prioritization Parameters** (`CEA.calculate_policy_r_multiplier()` - gcr_model.py:157):
 - **Transition timing**: Midpoint year 50, width 10 years (currently 2045-2055)
-- **Pre-2050 multipliers**: CDR=2.0x penalty, Conventional=0.7x subsidy, Co-benefits=0.8x
-- **Post-2050 multipliers**: CDR=1.0x neutral, Conventional=1.2x penalty, Co-benefits=1.0x
+- **Pre-2050 multipliers**: CDR=2.0x penalty, Conventional=0.7x subsidy
+- **Post-2050 multipliers**: CDR=1.0x neutral, Conventional=1.2x penalty
 - **Sigmoid steepness**: k=0.8 controls smoothness of transition
 
 **Capacity Constraint Parameters** (`ProjectsBroker.__init__()` - gcr_model.py:260):

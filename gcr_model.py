@@ -3,6 +3,7 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from enum import Enum
+from climate import CarbonCycle
 from country_equity_data import COUNTRY_EQUITY_DATA
 
 # ============================================================================
@@ -41,6 +42,7 @@ class Project:
     health: float = 1.0  # 1.0 = healthy, decays over time with stochastic events
     durability_years: int = 100  # Minimum durability
     total_sequestered_tonnes: float = 0.0  # Physical carbon delivered (for reversals)
+    co_benefit_score: float = 0.0  # Robin Hood overlay (0-1)
 
     # Backward compatibility property
     @property
@@ -48,7 +50,7 @@ class Project:
         """Alias for r_effective (backward compatibility)"""
         return self.r_effective
 
-    def step(self):
+    def step(self, failure_multiplier: float = 1.0):
         """Advance project by one year"""
         if self.status == ProjectStatus.DEVELOPMENT:
             self.years_in_development += 1
@@ -56,7 +58,8 @@ class Project:
                 self.status = ProjectStatus.OPERATIONAL
         elif self.status == ProjectStatus.OPERATIONAL:
             # Stochastic decay: natural failures (fires, leaks, tech failure)
-            if np.random.rand() < 0.02:  # 2% annual failure rate
+            annual_failure_rate = np.clip(0.02 * failure_multiplier, 0.0, 0.5)
+            if np.random.rand() < annual_failure_rate:  # Climate-adjusted failure rate
                 self.health *= np.random.uniform(0.8, 0.95)
 
 # ============================================================================
@@ -333,34 +336,34 @@ class CEA:
 class CentralBankAlliance:
     """Central Bank Alliance - Price floor defenders via CQE
 
-    CQE Budget Model (Option 3 - Gold Pool Model):
-    - Total CQE budget = 20% of current market cap, capped by GDP share
+    CQE Budget Model (Gold Pool Inspired):
+    - Total CQE budget = 15% of cumulative private capital, capped by GDP share
     - Apportioned among countries by GDP share
-    - Ensures private capital leads (80%), public backstop follows (20%)
-    - Matches historical gold intervention ratios (central banks ~20% of market)
+    - Ensures private capital leads (≈85%), public backstop follows (≈15%)
+    - Matches historical gold intervention ratios (central banks ~10-20% of market)
     """
 
     def __init__(self, countries: Dict[str, Dict], price_floor: float = 100.0):
         self.countries = countries
         self.price_floor_rcc = price_floor
-        self.total_cqe_budget = 0.0  # Calculated dynamically from market cap
-        self.cqe_ratio = 0.20  # CQE = 20% of market cap before GDP cap
+        self.total_cqe_budget = 0.0  # Calculated dynamically from private capital
+        self.cqe_ratio = 0.15  # CQE = 15% of cumulative private capital before GDP cap
         self.gdp_cap_ratio = 0.02  # CQE cap as share of active-country GDP
         self.total_cqe_spent = 0.0  # Track total M0 created (cumulative)
         self.annual_cqe_spent = 0.0  # Track spending this year (resets annually)
         self.current_budget_year = 0  # Track year for annual reset
 
-    def update_cqe_budget(self, market_capitalization: float):
-        """Recalculate CQE budget as 20% of current market cap, capped by GDP
+    def update_cqe_budget(self, cumulative_private_capital: float):
+        """Recalculate CQE budget as 15% of cumulative private capital, capped by GDP
 
         Gold Pool Model:
-        - Private capital pool (current market cap): 80-90% of market
+        - Private capital pool: 80-90% of market
         - CQE backstop capacity: 10-20% of market
-        - We use 20% ratio to match historical gold intervention levels
+        - We use 15% ratio to sit mid-range of the 10-20% target band
 
         Budget is then apportioned by GDP among active countries.
         """
-        market_cap_budget = market_capitalization * self.cqe_ratio
+        market_cap_budget = cumulative_private_capital * self.cqe_ratio
         active_gdp_tril = sum(country["gdp_tril"] for country in self.countries.values())
         gdp_cap_budget = active_gdp_tril * 1e12 * self.gdp_cap_ratio
         self.total_cqe_budget = min(market_cap_budget, gdp_cap_budget)
@@ -443,6 +446,9 @@ class ProjectsBroker:
         # Project size scales with cumulative deployment experience
         self.scale_damping_enabled = True
         self.full_scale_deployment_gt = 500.0  # Cumulative Gt when full industrial scale reached
+
+        # Co-benefits pool: fraction of XCR held back for redistribution
+        self.cobenefit_pool_fraction = 0.15  # 15% of minted XCR is reallocated via co-benefit scores
 
         # Marginal cost curves by channel (simplified)
         self.base_costs = {
@@ -735,7 +741,8 @@ class ProjectsBroker:
         """
         remaining_capital = max(available_capital_usd, 0.0)
 
-        for channel in ChannelType:
+        # Only initiate physical mitigation channels; co-benefits are handled as reward overlay
+        for channel in (ChannelType.CDR, ChannelType.CONVENTIONAL):
             if remaining_capital <= 0:
                 break
 
@@ -796,6 +803,8 @@ class ProjectsBroker:
                     if annual_seq <= 0:
                         break
 
+                    co_benefit_score = float(np.clip(np.random.normal(0.6, 0.2), 0.0, 1.0))
+
                     project = Project(
                         id=f"P{self.next_project_id:04d}",
                         channel=channel,
@@ -805,7 +814,8 @@ class ProjectsBroker:
                         annual_sequestration_tonnes=annual_seq,
                         marginal_cost_per_tonne=marginal_cost,
                         r_base=r_base,
-                        r_effective=r_effective
+                        r_effective=r_effective,
+                        co_benefit_score=co_benefit_score
                     )
 
                     self.projects.append(project)
@@ -814,7 +824,13 @@ class ProjectsBroker:
                     remaining_capital -= annual_seq * marginal_cost
                     remaining_capacity_gt -= annual_seq / 1e9
 
-    def step_projects(self, current_co2_ppm: float = 420.0, current_inflation: float = 0.02) -> float:
+    def step_projects(
+        self,
+        current_co2_ppm: float = 420.0,
+        current_inflation: float = 0.02,
+        climate_risk_multiplier: float = 1.0,
+        channel_risk_fn=None
+    ) -> float:
         """Advance all projects by one year and return reversal_tonnes
 
         When CO2 < 350 ppm (target achieved), projects have increased retirement rate
@@ -866,7 +882,8 @@ class ProjectsBroker:
                         continue
 
                 # Normal project step (development progress, stochastic decay)
-                project.step()
+                channel_factor = channel_risk_fn(project.channel.name.lower()) if channel_risk_fn else 1.0
+                project.step(failure_multiplier=climate_risk_multiplier * channel_factor)
 
         return reversal_tonnes
 
@@ -1155,13 +1172,18 @@ class GCR_ABM_Simulation:
         self.co2_level = 420.0  # ppm
         self.global_inflation = inflation_target  # Start at target
         self.total_xcr_supply = 0.0
+        self.carbon_cycle = CarbonCycle(initial_co2_ppm=self.co2_level)
+        self.co2_level = self.carbon_cycle.co2_ppm  # Keep ppm aligned with carbon cycle state
+        self.land_use_change_gtc = self.carbon_cycle.params.land_use_change_gtc  # Exogenous LUC emissions
 
-        # BAU (Business As Usual) emissions - constant flow rate
-        # Real-world emissions: ~40 GtCO2/year (36 fossil + 4 land use)
+        # BAU (Business As Usual) emissions - flow rate that peaks then declines
+        # Real-world emissions: ~40 GtCO2/year (36 fossil + 4 land use) today
         # Convert to ppm change: 1 GtC ≈ 0.47 ppm, 1 GtCO2 = 1/3.67 GtC
         # So 40 GtCO2/year = (40/3.67) GtC/year × 0.47 ppm/GtC ≈ 5.12 ppm/year
         self.bau_emissions_gt_per_year = 40.0  # GtCO2/year constant emission flow
-        self.bau_emissions_growth_rate = 0.01  # 1% annual growth in emissions (economic growth)
+        self.bau_peak_year = 6  # Years to peak (~2030 if start ~2024)
+        self.bau_growth_rate_pre_peak = 0.01  # 1% annual growth until peak
+        self.bau_decline_rate_post_peak = -0.02  # 2% annual decline after peak (policy + tech)
 
         # Expanded country pool (50 countries with varied characteristics)
         # Format: gdp_tril, base_cqe (as fraction of trillion), tier, region, active, adoption_year
@@ -1405,9 +1427,9 @@ class GCR_ABM_Simulation:
             # 2c. Calculate market price (sentiment + capital demand)
             self.investor_market.calculate_price(capital_demand_premium)
 
-            # 2c2. Update CQE budget (20% of current market cap - Gold Pool Model)
+            # 2c2. Update CQE budget (15% of cumulative private capital - Gold Pool Model)
             market_cap = self.total_xcr_supply * self.investor_market.market_price_xcr
-            self.central_bank.update_cqe_budget(market_cap)
+            self.central_bank.update_cqe_budget(self.capital_market.cumulative_capital_inflow)
 
             # 3. CEA updates policy
             self.cea.update_policy(
@@ -1445,7 +1467,14 @@ class GCR_ABM_Simulation:
                 )
 
             # 5. Step all projects (development progress, stochastic decay, retirement)
-            reversal_tonnes_projects = self.projects_broker.step_projects(self.co2_level, self.global_inflation)
+            climate_risk_multiplier = self.carbon_cycle.get_project_risk_multiplier()
+            channel_risk_fn = self.carbon_cycle.get_channel_risk_multiplier
+            reversal_tonnes_projects = self.projects_broker.step_projects(
+                self.co2_level,
+                self.global_inflation,
+                climate_risk_multiplier=climate_risk_multiplier,
+                channel_risk_fn=channel_risk_fn
+            )
 
             # 6. Auditor verifies operational projects and mints XCR
             operational_projects = self.projects_broker.get_operational_projects()
@@ -1454,9 +1483,11 @@ class GCR_ABM_Simulation:
             total_sequestration = 0.0
             cdr_sequestration = 0.0
             conventional_mitigation = 0.0
-            cobenefit_sequestration = 0.0
             xcr_minted_this_year = 0.0
             xcr_burned_this_year = 0.0  # Track burning separately
+            cobenefit_pool = 0.0
+            cobenefit_bonus_xcr = 0.0
+            cobenefit_candidates = []
 
             reversal_tonnes_audits = 0.0
 
@@ -1471,28 +1502,44 @@ class GCR_ABM_Simulation:
                     reversal_tonnes_audits += reversal
 
                     if xcr_change > 0:
-                        # Successful verification - MINT XCR
-                        xcr_minted_this_year += xcr_change_adjusted
+                        # Successful verification - MINT XCR (hold back a co-benefit pool slice)
+                        pool_contribution = xcr_change_adjusted * self.projects_broker.cobenefit_pool_fraction
+                        project_mint = xcr_change_adjusted - pool_contribution
+                        xcr_minted_this_year += project_mint
                         total_sequestration += project.annual_sequestration_tonnes
                         if project.channel == ChannelType.CDR:
                             cdr_sequestration += project.annual_sequestration_tonnes
                         elif project.channel == ChannelType.CONVENTIONAL:
                             conventional_mitigation += project.annual_sequestration_tonnes
-                        else:
-                            cobenefit_sequestration += project.annual_sequestration_tonnes
 
                         # Update cumulative deployment for learning curves
                         self.projects_broker.update_cumulative_deployment(
                             project.channel,
                             project.annual_sequestration_tonnes
                         )
+                        project.total_xcr_minted += project_mint
+                        cobenefit_pool += pool_contribution
+                        if project.co_benefit_score > 0:
+                            cobenefit_candidates.append((project, project.co_benefit_score))
 
                         # Track XCR earned by country (use adjusted amount)
                         if project.country in self.countries:
-                            self.countries[project.country]["xcr_earned"] += xcr_change_adjusted
+                            self.countries[project.country]["xcr_earned"] += project_mint
                     else:
                         # Failed audit - BURN XCR (negative value)
                         xcr_burned_this_year += abs(xcr_change_adjusted)  # Track as positive
+
+                # Redistribute co-benefit pool across eligible projects (proportional to score)
+                if cobenefit_pool > 0 and cobenefit_candidates:
+                    total_score = sum(score for _, score in cobenefit_candidates)
+                    if total_score > 0:
+                        for project, score in cobenefit_candidates:
+                            bonus = cobenefit_pool * (score / total_score)
+                            xcr_minted_this_year += bonus
+                            cobenefit_bonus_xcr += bonus
+                            project.total_xcr_minted += bonus
+                            if project.country in self.countries:
+                                self.countries[project.country]["xcr_earned"] += bonus
 
             # Update XCR supply from minting and burning
             self.total_xcr_supply += xcr_minted_this_year - xcr_burned_this_year
@@ -1522,35 +1569,40 @@ class GCR_ABM_Simulation:
             # Enforce absolute price floor
             self.investor_market.market_price_xcr = max(self.investor_market.market_price_xcr, self.price_floor)
 
-            # 8. Update CO2 levels: BAU emissions minus GCR sequestration
-            # BAU emissions are a CONSTANT FLOW (GtCO2/year), not percentage of stock
-            # Conventional mitigation reduces emissions flow; CDR/cobenefits remove CO2 from stock.
-
-            # Convert BAU emissions to ppm change
-            # 1 GtCO2 = (1/3.67) GtC, and 1 GtC ≈ 0.47 ppm
-            bau_emissions_gtc = self.bau_emissions_gt_per_year / 3.67  # GtCO2 -> GtC
-            bau_increase_ppm = bau_emissions_gtc * 0.47  # GtC -> ppm
+            # 8. Update climate state using carbon cycle (emissions, sinks, feedbacks)
+            ppm_per_gtc = self.carbon_cycle.params.ppm_per_gtc
+            gtc_per_gtco2 = 1 / self.carbon_cycle.params.gtco2_per_gtc
+            bau_emissions_gtc = self.bau_emissions_gt_per_year * gtc_per_gtco2
+            bau_increase_ppm = bau_emissions_gtc * ppm_per_gtc
 
             # Conventional mitigation reduces emissions flow (cannot go below zero)
-            conventional_gtc = conventional_mitigation / 1e9 / 3.67  # tonnes CO2 -> GtC
+            conventional_gtc = conventional_mitigation / 1e9 * gtc_per_gtco2
             actual_emissions_gtc = max(0.0, bau_emissions_gtc - conventional_gtc)
-            actual_emissions_ppm = actual_emissions_gtc * 0.47
 
             # CDR + co-benefits remove CO2 from stock
-            removal_gtc = (cdr_sequestration + cobenefit_sequestration) / 1e9 / 3.67  # tonnes CO2 -> GtC
-            co2_reduction_ppm = removal_gtc * 0.47
+            removal_gtc = cdr_sequestration / 1e9 * gtc_per_gtco2
 
             reversal_tonnes_total = reversal_tonnes_projects + reversal_tonnes_audits
-            reversal_gtc = reversal_tonnes_total / 1e9 / 3.67
-            reversal_ppm = reversal_gtc * 0.47
+            reversal_gtc = reversal_tonnes_total / 1e9 * gtc_per_gtco2
 
-            # Net change: CO2 only declines when sequestration > BAU emissions (net zero achieved)
-            # This is now a proper flow balance: Emissions IN - Sequestration OUT
-            net_change_ppm = actual_emissions_ppm + reversal_ppm - co2_reduction_ppm
-            self.co2_level += net_change_ppm
+            net_emissions_gtc = actual_emissions_gtc + reversal_gtc
 
-            # BAU emissions grow over time (economic growth increases fossil fuel use)
-            self.bau_emissions_gt_per_year *= (1 + self.bau_emissions_growth_rate)
+            climate_state = self.carbon_cycle.step(
+                emissions_gtc=net_emissions_gtc,
+                sequestration_gtc=removal_gtc,
+                land_use_change_gtc=self.land_use_change_gtc
+            )
+            self.co2_level = climate_state["CO2_ppm"]
+
+            # BAU emissions peak then decline (reflects expected global peak before 2030)
+            if year < self.bau_peak_year:
+                bau_growth_rate = self.bau_growth_rate_pre_peak
+            else:
+                bau_growth_rate = self.bau_decline_rate_post_peak
+
+            self.bau_emissions_gt_per_year = max(
+                0.0, self.bau_emissions_gt_per_year * (1 + bau_growth_rate)
+            )
 
             # 9. Update BAU trajectory (no intervention scenario)
             # BAU trajectory uses same emissions flow but no sequestration
@@ -1560,27 +1612,22 @@ class GCR_ABM_Simulation:
             # Technology costs (learning-adjusted)
             cdr_cost = self.projects_broker.calculate_marginal_cost(ChannelType.CDR)
             conv_cost = self.projects_broker.calculate_marginal_cost(ChannelType.CONVENTIONAL)
-            cobenefit_cost = self.projects_broker.calculate_marginal_cost(ChannelType.COBENEFITS)
 
             # Cumulative deployment by channel (in GtCO2 for readability)
             cdr_cumulative = self.projects_broker.cumulative_deployment[ChannelType.CDR] / 1e9
             conv_cumulative = self.projects_broker.cumulative_deployment[ChannelType.CONVENTIONAL] / 1e9
-            cobenefit_cumulative = self.projects_broker.cumulative_deployment[ChannelType.COBENEFITS] / 1e9
 
             # Policy multipliers
             cdr_policy = self.cea.calculate_policy_r_multiplier(ChannelType.CDR, year)
             conv_policy = self.cea.calculate_policy_r_multiplier(ChannelType.CONVENTIONAL, year)
-            cobenefit_policy = self.cea.calculate_policy_r_multiplier(ChannelType.COBENEFITS, year)
 
             # Effective R-values (base × policy)
             cdr_r_base, cdr_r_eff = self.cea.calculate_project_r_value(ChannelType.CDR, cdr_cost, self.price_floor, year)
             conv_r_base, conv_r_eff = self.cea.calculate_project_r_value(ChannelType.CONVENTIONAL, conv_cost, self.price_floor, year)
-            cobenefit_r_base, cobenefit_r_eff = self.cea.calculate_project_r_value(ChannelType.COBENEFITS, cobenefit_cost, self.price_floor, year)
 
             # Profitability signals (market_price / R_eff - cost)
             cdr_profit = (self.investor_market.market_price_xcr / cdr_r_eff) - cdr_cost if cdr_r_eff > 0 else 0
             conv_profit = (self.investor_market.market_price_xcr / conv_r_eff) - conv_cost if conv_r_eff > 0 else 0
-            cobenefit_profit = (self.investor_market.market_price_xcr / cobenefit_r_eff) - cobenefit_cost if cobenefit_r_eff > 0 else 0
 
             # Conventional capacity utilization
             conv_capacity_util = self.projects_broker.get_conventional_capacity_utilization(year)
@@ -1598,6 +1645,7 @@ class GCR_ABM_Simulation:
                 "XCR_Minted": xcr_minted_this_year,
                 "XCR_Burned_Annual": xcr_burned_this_year,
                 "XCR_Burned_Cumulative": self.auditor.total_xcr_burned,
+                "Cobenefit_Bonus_XCR": cobenefit_bonus_xcr,
                 "Market_Price": self.investor_market.market_price_xcr,
                 "Price_Floor": self.price_floor,
                 "Sentiment": self.investor_market.sentiment,
@@ -1613,33 +1661,41 @@ class GCR_ABM_Simulation:
                 "CQE_Budget_Total": self.central_bank.total_cqe_budget,
                 "Capacity": capacity,
 
+                # Climate physics
+                "Temperature_Anomaly": climate_state["Temperature_Anomaly"],
+                "Ocean_Uptake_GtC": climate_state["Ocean_Uptake_GtC"],
+                "Land_Uptake_GtC": climate_state["Land_Uptake_GtC"],
+                "Airborne_Fraction": climate_state["Airborne_Fraction"],
+                "Ocean_Sink_Capacity": climate_state["Ocean_Sink_Capacity"],
+                "Land_Sink_Capacity": climate_state["Land_Sink_Capacity"],
+                "Permafrost_Emissions_GtC": climate_state["Permafrost_Emissions_GtC"],
+                "Fire_Emissions_GtC": climate_state["Fire_Emissions_GtC"],
+                "Cumulative_Emissions_GtC": climate_state["Cumulative_Emissions_GtC"],
+                "Climate_Risk_Multiplier": climate_state["Climate_Risk_Multiplier"],
+                "C_Ocean_Surface_GtC": climate_state["C_Ocean_Surface_GtC"],
+                "C_Land_GtC": climate_state["C_Land_GtC"],
+
                 # NEW: Technology costs (learning-adjusted)
                 "CDR_Cost_Per_Tonne": cdr_cost,
                 "Conventional_Cost_Per_Tonne": conv_cost,
-                "Cobenefits_Cost_Per_Tonne": cobenefit_cost,
 
                 # NEW: Cumulative deployment (learning curve progress)
                 "CDR_Cumulative_GtCO2": cdr_cumulative,
                 "Conventional_Cumulative_GtCO2": conv_cumulative,
-                "Cobenefits_Cumulative_GtCO2": cobenefit_cumulative,
 
                 # NEW: Policy multipliers (channel prioritization)
                 "CDR_Policy_Multiplier": cdr_policy,
                 "Conventional_Policy_Multiplier": conv_policy,
-                "Cobenefits_Policy_Multiplier": cobenefit_policy,
 
                 # NEW: Effective R-values (base × policy)
                 "CDR_R_Base": cdr_r_base,
                 "CDR_R_Effective": cdr_r_eff,
                 "Conventional_R_Base": conv_r_base,
                 "Conventional_R_Effective": conv_r_eff,
-                "Cobenefits_R_Base": cobenefit_r_base,
-                "Cobenefits_R_Effective": cobenefit_r_eff,
 
                 # NEW: Profitability signals
                 "CDR_Profitability": cdr_profit,
                 "Conventional_Profitability": conv_profit,
-                "Cobenefits_Profitability": cobenefit_profit,
 
                 # NEW: Conventional capacity constraints
                 "Conventional_Capacity_Utilization": conv_capacity_util,

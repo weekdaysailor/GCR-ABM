@@ -8,7 +8,7 @@ The original implementation had **fixed CQE budgets per country** (USA: $50B, Ch
 
 ## Solution: Gold Pool Model (Option 3)
 
-Implemented CQE as **20% of cumulative private capital invested** in XCR, following the historical Gold Pool (1961-68) intervention model.
+Implemented CQE as **15% of cumulative private capital invested** in XCR (mid-range of the 10-20% target band), following the historical Gold Pool (1961-68) intervention model.
 
 ### Historical Precedent: XAU (Gold) Markets
 
@@ -34,7 +34,7 @@ class CentralBankAlliance:
     """Central Bank Alliance - Price floor defenders via CQE
 
     CQE Budget Model (Option 3 - Gold Pool Model):
-    - Total CQE budget = 20% of cumulative private capital invested in XCR
+    - Total CQE budget = 15% of cumulative private capital invested in XCR
     - Apportioned among countries by GDP share
     - Ensures private capital leads (80%), public backstop follows (20%)
     - Matches historical gold intervention ratios (central banks ~20% of market)
@@ -44,18 +44,18 @@ class CentralBankAlliance:
         self.countries = countries
         self.price_floor_rcc = price_floor
         self.total_cqe_budget = 0.0  # Calculated dynamically from private capital
-        self.cqe_ratio = 0.20  # CQE = 20% of cumulative private capital
+        self.cqe_ratio = 0.15  # CQE = 15% of cumulative private capital
         self.total_cqe_spent = 0.0  # Track total M0 created (cumulative)
         self.annual_cqe_spent = 0.0  # Track spending this year (resets annually)
         self.current_budget_year = 0  # Track year for annual reset
 
     def update_cqe_budget(self, cumulative_private_capital: float):
-        """Recalculate CQE budget as 20% of cumulative private capital invested
+        """Recalculate CQE budget as 15% of cumulative private capital invested
 
         Gold Pool Model:
         - Private capital pool (cumulative inflows): 80-90% of market
         - CQE backstop capacity: 10-20% of market
-        - We use 20% ratio to match historical gold intervention levels
+        - We use 15% ratio to match mid-band historical intervention levels
 
         Budget is then apportioned by GDP among active countries.
         """
@@ -99,7 +99,7 @@ self.central_bank.update_cqe_budget(self.capital_market.cumulative_capital_inflo
 - **Con**: Smaller budgets (only ~2% of market cap)
 - **Example**: $1T market cap × 10% turnover → $20B CQE budget
 
-### Option 3: CQE = 20% of Cumulative Private Capital ✓ **Selected**
+### Option 3: CQE = 15% of Cumulative Private Capital ✓ **Selected**
 - **Pro**: Private capital leads, public follows conservatively
 - **Pro**: Matches Gold Pool historical precedent
 - **Pro**: Stable (monotonically increasing)
@@ -133,7 +133,7 @@ Summary:
   ✓ CQE budget correctly follows private capital at 20% ratio (Gold Pool Model)
 ```
 
-**Result**: ✅ CQE budget is exactly 20% of cumulative private capital across all years.
+**Result**: ✅ CQE budget tracks 15% of cumulative private capital across all years.
 
 ### Budget Utilization
 

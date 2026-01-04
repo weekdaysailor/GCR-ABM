@@ -778,7 +778,7 @@ if st.session_state.df is not None:
         st.info("""
         **Learning Curves**: Technology costs decrease as cumulative deployment grows. CDR has the
         steepest learning curve (20%) because it's early-stage, while conventional mitigation (12%)
-        and co-benefits (8%) improve more slowly.
+        improves more slowly.
         """)
 
         st.warning("""
@@ -809,13 +809,6 @@ if st.session_state.df is not None:
             line=dict(color='#2ca02c', width=3),
             mode='lines'
         ))
-        fig1.add_trace(go.Scatter(
-            x=df['Year'], y=df['Cobenefits_Cost_Per_Tonne'],
-            name='Co-benefits (8% LR)',
-            line=dict(color='#ff7f0e', width=3),
-            mode='lines'
-        ))
-
         fig1.update_layout(
             xaxis_title="Year",
             yaxis_title="Cost (USD/tonne CO2)",
@@ -838,12 +831,6 @@ if st.session_state.df is not None:
             x=df['Year'], y=df['Conventional_Policy_Multiplier'],
             name='Conventional',
             line=dict(color='#2ca02c', width=3),
-            mode='lines'
-        ))
-        fig2.add_trace(go.Scatter(
-            x=df['Year'], y=df['Cobenefits_Policy_Multiplier'],
-            name='Co-benefits',
-            line=dict(color='#ff7f0e', width=3),
             mode='lines'
         ))
 
@@ -878,13 +865,6 @@ if st.session_state.df is not None:
             x=df['Year'], y=df['Conventional_Profitability'],
             name='Conventional',
             line=dict(color='#2ca02c', width=3),
-            fill='tozeroy',
-            mode='lines'
-        ))
-        fig3.add_trace(go.Scatter(
-            x=df['Year'], y=df['Cobenefits_Profitability'],
-            name='Co-benefits',
-            line=dict(color='#ff7f0e', width=3),
             fill='tozeroy',
             mode='lines'
         ))
