@@ -293,7 +293,7 @@ class CEA:
             return 1.0
 
         # Define transition parameters
-        transition_midpoint = 50  # Year 50 (2050 if start=2000)
+        transition_midpoint = 40  # Earlier pivot toward CDR
         transition_width = 10  # 10-year transition window
 
         # Sigmoid transition: 0 (pre-2050) to 1 (post-2050)
@@ -303,8 +303,8 @@ class CEA:
 
         # Define multipliers for each era
         if channel == ChannelType.CONVENTIONAL:
-            pre_2050 = 0.7  # Subsidized early
-            post_2050 = 1.2  # Penalized later
+            pre_2050 = 0.6  # Less subsidy early
+            post_2050 = 1.3  # Stronger penalty later
         else:  # COBENEFITS
             pre_2050 = 0.8  # Slight subsidy early
             post_2050 = 1.0  # Normalized later
@@ -507,8 +507,8 @@ class ProjectsBroker:
         # Maximum annual sequestration capacity by channel (Gt/year)
         # Represents physical/technological limits on deployment scale
         self.max_capacity_gt_per_year = {
-            ChannelType.CDR: 6.0,  # Direct Air Capture, BECCS, etc. - limited by tech/energy
-            ChannelType.CONVENTIONAL: 40.0,  # Renewables, efficiency - higher potential
+            ChannelType.CDR: 12.0,  # Expandable to handle late-century heavy lifting
+            ChannelType.CONVENTIONAL: 30.0,  # Earlier taper to force CDR reliance
             ChannelType.COBENEFITS: 50.0  # Nature-based solutions - large potential
         }
 
@@ -1513,6 +1513,8 @@ class GCR_ABM_Simulation:
             cobenefit_pool = 0.0
             cobenefit_bonus_xcr = 0.0
             cobenefit_candidates = []
+            cdr_sequestration_tonnes = 0.0
+            conv_sequestration_tonnes = 0.0
 
             reversal_tonnes_audits = 0.0
 
@@ -1534,8 +1536,10 @@ class GCR_ABM_Simulation:
                         total_sequestration += project.annual_sequestration_tonnes
                         if project.channel == ChannelType.CDR:
                             cdr_sequestration += project.annual_sequestration_tonnes
+                            cdr_sequestration_tonnes += project.annual_sequestration_tonnes
                         elif project.channel == ChannelType.CONVENTIONAL:
                             conventional_mitigation += project.annual_sequestration_tonnes
+                            conv_sequestration_tonnes += project.annual_sequestration_tonnes
 
                         # Update cumulative deployment for learning curves
                         self.projects_broker.update_cumulative_deployment(
@@ -1683,6 +1687,8 @@ class GCR_ABM_Simulation:
                 "Projects_Development": len(development_projects),
                 "Projects_Failed": len(failed_projects),
                 "Sequestration_Tonnes": total_sequestration,
+                "CDR_Sequestration_Tonnes": cdr_sequestration_tonnes,
+                "Conventional_Mitigation_Tonnes": conv_sequestration_tonnes,
                 "Reversal_Tonnes": reversal_tonnes_total,
                 "CEA_Warning": self.cea.warning_8to1_active,
                 "CQE_Spent": self.central_bank.total_cqe_spent,

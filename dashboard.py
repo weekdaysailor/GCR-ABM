@@ -168,7 +168,7 @@ if st.session_state.df is not None:
 
         fig = make_subplots(
             rows=2, cols=1,
-            subplot_titles=("Atmospheric CO2 Concentration (GCR vs BAU)", "Annual Sequestration"),
+            subplot_titles=("Atmospheric CO2 Concentration (GCR vs BAU)", "Annual Sequestration by Channel"),
             vertical_spacing=0.15,
             specs=[[{"secondary_y": False}], [{"secondary_y": True}]]
         )
@@ -208,16 +208,26 @@ if st.session_state.df is not None:
             row=1, col=1
         )
 
-        # Sequestration
+        # Sequestration by channel (stacked)
         fig.add_trace(
             go.Bar(
                 x=df['Year'],
-                y=df['Sequestration_Tonnes'],
-                name="Sequestration (tonnes/year)",
+                y=df['CDR_Sequestration_Tonnes'],
+                name="CDR",
+                marker_color='#1f77b4',
+                opacity=0.8
+            ),
+            row=2, col=1, secondary_y=False
+        )
+        fig.add_trace(
+            go.Bar(
+                x=df['Year'],
+                y=df['Conventional_Mitigation_Tonnes'],
+                name="Conventional",
                 marker_color='#2ca02c',
                 opacity=0.7
             ),
-            row=2, col=1
+            row=2, col=1, secondary_y=False
         )
 
         # Projects operational (secondary axis)
@@ -238,7 +248,7 @@ if st.session_state.df is not None:
         fig.update_yaxes(title_text="Tonnes CO2e/year", row=2, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Project Count", row=2, col=1, secondary_y=True)
 
-        fig.update_layout(height=700, showlegend=True, hovermode='x unified')
+        fig.update_layout(height=700, showlegend=True, hovermode='x unified', barmode='stack')
         st.plotly_chart(fig, width='stretch')
 
         # BAU Impact Summary
@@ -256,6 +266,13 @@ if st.session_state.df is not None:
         with col3:
             bau_growth = ((df.iloc[-1]['BAU_CO2_ppm'] / 420.0) - 1) * 100
             st.metric("BAU CO2 Growth", f"+{bau_growth:.1f}%")
+        col4, col5 = st.columns(2)
+        with col4:
+            cdr_total = df['CDR_Sequestration_Tonnes'].sum()
+            st.metric("CDR Delivered", f"{cdr_total:.2e} tonnes")
+        with col5:
+            conv_total = df['Conventional_Mitigation_Tonnes'].sum()
+            st.metric("Conventional Delivered", f"{conv_total:.2e} tonnes")
 
     # Tab 2: XCR Economics
     with tab2:
