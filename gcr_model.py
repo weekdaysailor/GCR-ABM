@@ -449,7 +449,7 @@ class CentralBankAlliance:
             # Ensure material signal when spending is non-trivial
             if active_gdp_usd > 0 and (fiat_created / active_gdp_usd) > 0.001:
                 inflation_impact = max(inflation_impact, 0.0025)
-            inflation_impact = float(np.clip(inflation_impact, 0.0, 0.05))  # Cap at +5pp
+            inflation_impact = float(np.clip(inflation_impact, 0.0, 0.02))  # Cap at +2pp
 
             return price_support, inflation_impact, xcr_purchased
 
@@ -467,7 +467,7 @@ class ProjectsBroker:
         # Project scale damping (learning-by-doing curve)
         # Project size scales with cumulative deployment experience
         self.scale_damping_enabled = True
-        self.full_scale_deployment_gt = 500.0  # Cumulative Gt when full industrial scale reached
+        self.full_scale_deployment_gt = 250.0  # Faster path to full industrial scale
 
         # Co-benefits pool: fraction of XCR held back for redistribution
         self.cobenefit_pool_fraction = 0.15  # 15% of minted XCR is reallocated via co-benefit scores
@@ -507,7 +507,7 @@ class ProjectsBroker:
         # Maximum annual sequestration capacity by channel (Gt/year)
         # Represents physical/technological limits on deployment scale
         self.max_capacity_gt_per_year = {
-            ChannelType.CDR: 12.0,  # Expandable to handle late-century heavy lifting
+            ChannelType.CDR: 100.0,  # DAC/NCC nearly unconstrained (soft limit)
             ChannelType.CONVENTIONAL: 30.0,  # Earlier taper to force CDR reliance
             ChannelType.COBENEFITS: 50.0  # Nature-based solutions - large potential
         }
@@ -1594,6 +1594,11 @@ class GCR_ABM_Simulation:
                 # CQE buying pressure pushes price toward floor
                 self.investor_market.market_price_xcr += price_support
                 self.global_inflation += inflation_impact
+                # Hard mean-reversion clamp toward target to avoid runaway CPI
+                if self.global_inflation > self.inflation_target:
+                    over_shoot = self.global_inflation - self.inflation_target
+                    self.global_inflation -= over_shoot * 0.6  # Pull 60% back toward target
+                    self.global_inflation = min(self.global_inflation, self.inflation_target * 1.5)
 
             # Enforce absolute price floor
             self.investor_market.market_price_xcr = max(self.investor_market.market_price_xcr, self.price_floor)
