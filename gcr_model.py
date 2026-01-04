@@ -1205,7 +1205,7 @@ class GCR_ABM_Simulation:
 
         # Global state
         self.co2_level = 420.0  # ppm
-        self.global_inflation = inflation_target  # Start at target
+        self.global_inflation = 0.0  # Start at baseline; target guides corrections
         self.total_xcr_supply = 0.0
         self.carbon_cycle = CarbonCycle(initial_co2_ppm=self.co2_level)
         self.co2_level = self.carbon_cycle.co2_ppm  # Keep ppm aligned with carbon cycle state
@@ -1411,6 +1411,7 @@ class GCR_ABM_Simulation:
                 self.central_bank.annual_cqe_spent / self.central_bank.total_cqe_budget
                 if self.central_bank.total_cqe_budget > 0 else 0.0
             )
+            system_active = year >= self.xcr_start_year
 
             # Annual CQE budget reset
             if year != self.central_bank.current_budget_year:
@@ -1440,59 +1441,71 @@ class GCR_ABM_Simulation:
             self.global_inflation -= inflation_gap * correction_rate
 
             # 2. Update investor sentiment
-            self.investor_market.update_sentiment(
-                self.cea.warning_8to1_active,
-                self.global_inflation,
-                self.inflation_target,
-                self.co2_level,
-                self.cea.initial_co2_ppm
-            )
+            price_floor_prev = self.price_floor
+
+            if system_active:
+                self.investor_market.update_sentiment(
+                    self.cea.warning_8to1_active,
+                    self.global_inflation,
+                    self.inflation_target,
+                    self.co2_level,
+                    self.cea.initial_co2_ppm
+                )
 
             # 2b. Update capital market (private investors)
             # Calculate roadmap gap for forward guidance
             roadmap_target = self.cea.calculate_roadmap_target(year, self.years)
             roadmap_gap = self.co2_level - roadmap_target
 
-            net_capital_flow, capital_demand_premium, forward_guidance = self.capital_market.update_capital_flows(
-                self.co2_level, year, self.years, roadmap_gap,
-                self.global_inflation, self.inflation_target,
-                self.investor_market.sentiment, self.total_xcr_supply,
-                self.price_floor
-            )
+            if system_active:
+                net_capital_flow, capital_demand_premium, forward_guidance = self.capital_market.update_capital_flows(
+                    self.co2_level, year, self.years, roadmap_gap,
+                    self.global_inflation, self.inflation_target,
+                    self.investor_market.sentiment, self.total_xcr_supply,
+                    self.price_floor
+                )
+            else:
+                net_capital_flow, capital_demand_premium, forward_guidance = (0.0, 0.0, 0.0)
 
             # 2c. Calculate market price (sentiment + capital demand)
-            self.investor_market.calculate_price(capital_demand_premium)
+            if system_active:
+                self.investor_market.calculate_price(capital_demand_premium)
+            market_cap = self.total_xcr_supply * self.investor_market.market_price_xcr if system_active else 0.0
 
             # 2c2. Update CQE budget (15% of cumulative private capital - Gold Pool Model)
-            market_cap = self.total_xcr_supply * self.investor_market.market_price_xcr
-            self.central_bank.update_cqe_budget(self.capital_market.cumulative_capital_inflow)
+            if system_active:
+                self.central_bank.update_cqe_budget(self.capital_market.cumulative_capital_inflow)
 
             # 3. CEA updates policy
-            self.cea.update_policy(
-                self.co2_level,
-                market_cap,
-                self.central_bank.total_cqe_budget,
-                self.global_inflation,
-                budget_utilization
-            )
+            if system_active:
+                self.cea.update_policy(
+                    self.co2_level,
+                    market_cap,
+                    self.central_bank.total_cqe_budget,
+                    self.global_inflation,
+                    budget_utilization
+                )
 
-            # 3b. CEA adjusts price floor based on roadmap progress
-            # Periodic revisions (every 5 years) with locked-in guidance between
-            self.price_floor, revision_occurred = self.cea.adjust_price_floor(
-                self.co2_level,
-                self.price_floor,
-                year,
-                self.years,
-                current_inflation=self.global_inflation,
-                temperature_anomaly=self.carbon_cycle.temperature
-            )
+            # 3b. CEA adjusts price floor based on roadmap progress (only after start)
+            if system_active:
+                self.price_floor, revision_occurred = self.cea.adjust_price_floor(
+                    self.co2_level,
+                    self.price_floor,
+                    year,
+                    self.years,
+                    current_inflation=self.global_inflation,
+                    temperature_anomaly=self.carbon_cycle.temperature
+                )
+            else:
+                revision_occurred = False
+            price_floor_delta = self.price_floor - price_floor_prev
             # Update price floor in agents
             self.central_bank.price_floor_rcc = self.price_floor
             self.investor_market.price_floor = self.price_floor
 
             # 4. Projects broker initiates new projects
             # Only initiate projects if capacity > 0 (system active)
-            if capacity > 0:
+            if capacity > 0 and system_active:
                 available_capital_usd = max(net_capital_flow, 0.0)
                 self.projects_broker.initiate_projects(
                     self.investor_market.market_price_xcr,
@@ -1710,6 +1723,7 @@ class GCR_ABM_Simulation:
                 "Reversal_Tonnes": reversal_tonnes_total,
                 "CEA_Warning": self.cea.warning_8to1_active,
                 "CQE_Spent": self.central_bank.total_cqe_spent,
+                "XCR_Purchased": xcr_purchased,
                 "Active_Countries": len(self.countries),
                 "CQE_Budget_Total": self.central_bank.total_cqe_budget,
                 "Capacity": capacity,
