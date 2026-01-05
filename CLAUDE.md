@@ -163,17 +163,17 @@ The model properly separates **stocks** (atmospheric CO2 concentration) from **f
 **Flows (measured in GtCO2/year):**
 - BAU emissions: 40 GtCO2/year, peak around year 6, plateau, then very gradual late‑century decline (~0.2%/yr)
 - GCR sequestration: Variable based on project deployment (0 → 100+ Gt/year)
-- Net flow = Emissions - Sequestration
+- Net flow = Emissions + feedbacks - sinks - removals
 
 **Critical Physics:**
 - BAU emissions are determined by human activity (burning fossil fuels), NOT by atmospheric concentration
 - Burning 100M barrels/day emits ~40 GtCO2/year regardless of whether CO2 is 420 ppm or 400 ppm
-- **Atmospheric CO2 only declines when: Sequestration > Emissions** (net-zero achieved)
+- **Atmospheric CO2 only declines when: Sinks + removals exceed emissions** (net-negative flow)
 
 **Expected Timeline:**
 - **Years 0-15:** CO2 RISES (emissions > sequestration) despite GCR system operating
 - **Years 15-20:** CO2 stabilizes as system approaches net-zero
-- **Years 20+:** CO2 DECLINES (sequestration > emissions) toward 350 ppm target
+- **Years 20+:** CO2 DECLINES once net-negative flows dominate, toward 350 ppm target
 
 This ensures the model respects the fundamental constraint that atmospheric CO2 cannot decline until global emissions reach net-zero.
 
@@ -344,6 +344,7 @@ Located in `ProjectsBroker.__init__()` (gcr_model.py:419):
 - **Base Costs**: CDR=$100/tonne, Conventional=$80/tonne
 - **Project Scale**: 10M-100M tonnes/year base (damped by cumulative deployment)
 - **Scale Damping**: Enabled by default, full scale at 45 Gt cumulative deployment (min scale ~7%, slider 10–50 Gt)
+- **Count Damping**: Project counts ramp with cumulative deployment (min 20% early, rising to full scale)
 - **Project Initiation Rate**: Capital‑limited (no per‑country caps), scaled by urgency
 - **Development Time**: 2-4 years randomly assigned
 - **Project Failure**: 2% annual stochastic decay rate

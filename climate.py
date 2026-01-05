@@ -236,7 +236,8 @@ class CarbonCycle:
         if sink_total > max_sink and sink_total > 0:
             scale = max_sink / sink_total
             f_ocean *= scale
-            f_land_net *= scale
+            if f_land_net > 0:
+                f_land_net *= scale
 
         # Reservoir updates
         self.c_ocean_surface = max(self.c_ocean_surface + f_ocean - f_mixing, 0.0)

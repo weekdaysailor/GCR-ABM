@@ -37,6 +37,7 @@ This model is a simplified, global, yearly simulation. The notes below describe 
 - Project initiation is limited by available private capital and physical capacity, not by per‑country caps.
 - Project initiation is also throttled by the CEA brake factor when stability or inflation constraints tighten.
 - Project scale ramps with cumulative deployment using a normalized sigmoid (starts ~7% of base and reaches full scale around 45 Gt by default; slider range 10–50 Gt).
+- Project counts are damped by cumulative deployment (minimum 20% of potential projects early, rising to full scale with experience).
 - Conventional capacity tapers down as utilization approaches the hard‑to‑abate limit (no hard cutoff).
 - CDR capacity is configurable (1-100 Gt/year via dashboard); conventional mitigation defaults to ~30 Gt/year.
 

@@ -449,6 +449,8 @@ class ProjectsBroker:
         # Project size scales with cumulative deployment experience
         self.scale_damping_enabled = True
         self.full_scale_deployment_gt = 45.0  # Default full-scale threshold (Gt)
+        self.count_damping_enabled = True
+        self.count_damping_min_factor = 0.20  # Minimum fraction of project counts early on
 
         # Co-benefits pool: fraction of XCR held back for redistribution
         self.cobenefit_pool_fraction = 0.15  # 15% of minted XCR is reallocated via co-benefit scores
@@ -543,6 +545,34 @@ class ProjectsBroker:
         normalized = np.clip(normalized, 0.0, 1.0)
 
         return min_scale + (1.0 - min_scale) * normalized
+
+    def calculate_project_count_damper(self) -> float:
+        """Calculate project count damping factor based on cumulative deployment experience.
+
+        Keeps early project counts low while the industry is nascent.
+        Returns multiplier from count_damping_min_factor to 1.0.
+        """
+        if not self.count_damping_enabled:
+            return 1.0
+
+        total_deployment_gt = sum(self.cumulative_deployment.values()) / 1e9
+        min_count = self.count_damping_min_factor
+
+        if total_deployment_gt <= 0:
+            return min_count
+        if total_deployment_gt >= self.full_scale_deployment_gt:
+            return 1.0
+
+        midpoint = self.full_scale_deployment_gt * 0.3
+        steepness = 8.0 / max(self.full_scale_deployment_gt, 1e-6)
+
+        s0 = 1.0 / (1.0 + np.exp(-steepness * (0.0 - midpoint)))
+        s1 = 1.0 / (1.0 + np.exp(-steepness * (self.full_scale_deployment_gt - midpoint)))
+        s = 1.0 / (1.0 + np.exp(-steepness * (total_deployment_gt - midpoint)))
+        normalized = (s - s0) / max(s1 - s0, 1e-6)
+        normalized = np.clip(normalized, 0.0, 1.0)
+
+        return min_count + (1.0 - min_count) * normalized
 
     def calculate_marginal_cost(self, channel: ChannelType) -> float:
         """Calculate current marginal cost using learning curves
@@ -804,6 +834,7 @@ class ProjectsBroker:
 
                 # Estimate how many projects available capital and capacity can support
                 scale_damper = self.calculate_project_scale_damper()
+                count_damper = self.calculate_project_count_damper()
                 expected_base_seq = 5.5e7  # Expected base scale (10-100M tonnes avg)
                 min_base_seq = 1e7  # Minimum base scale
                 expected_seq = expected_base_seq * scale_damper
@@ -812,7 +843,7 @@ class ProjectsBroker:
                 max_by_capital = int(remaining_capital / max(marginal_cost * expected_seq, 1.0))
                 max_by_capacity = int((remaining_capacity_gt * 1e9) / max(min_seq, 1.0))
                 max_projects = max(min(max_by_capital, max_by_capacity), 0)
-                num_projects = int(max_projects * urgency_factor * capacity_factor)
+                num_projects = int(max_projects * urgency_factor * capacity_factor * count_damper)
 
                 # Inner loop: create multiple projects for this channel
                 for _ in range(num_projects):

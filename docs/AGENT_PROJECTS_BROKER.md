@@ -15,6 +15,7 @@ To supply sequestration (Gt/yr) by responding to the XCR reward price.
 5. **Co-benefit Pool:** 15% of minted XCR is redistributed by project co-benefit scores.
 6. **Learning Curves:** Costs fall with cumulative deployment.
 7. **Scale Damping:** Project size ramps with cumulative deployment (pilot → industrial), with a dashboard slider for the full‑scale threshold.
-8. **Retirement:** Projects retire faster when CO2 drops below target.
-9. **Allocation:** Country selection is weighted by tier/region preferences (not fixed country lists).
-10. **Milestones:** Rewards are issued after audits of annual sequestration.
+8. **Count Damping:** Project counts ramp with cumulative deployment (early years initiate fewer projects).
+9. **Retirement:** Projects retire faster when CO2 drops below target.
+10. **Allocation:** Country selection is weighted by tier/region preferences (not fixed country lists).
+11. **Milestones:** Rewards are issued after audits of annual sequestration.
