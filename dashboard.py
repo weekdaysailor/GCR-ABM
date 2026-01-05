@@ -52,6 +52,19 @@ years_to_full_capacity = st.sidebar.slider("Years to Full Capacity", min_value=1
                                            help="Years for system to ramp from 0% to 100% capacity")
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("Technology Parameters")
+cdr_learning_rate = st.sidebar.slider("CDR Learning Rate (per doubling)", min_value=0.05, max_value=0.30,
+                                      value=0.20, step=0.01)
+conventional_learning_rate = st.sidebar.slider("Conventional Learning Rate (per doubling)", min_value=0.05,
+                                               max_value=0.25, value=0.12, step=0.01)
+scale_full_deployment_gt = st.sidebar.slider("Scale Damping Full-Scale Deployment (Gt)",
+                                             min_value=10, max_value=50, value=45, step=5,
+                                             help="Lower values scale faster; higher values scale slower")
+cdr_capacity_gt = st.sidebar.slider("CDR Capacity Cap (Gt/yr)",
+                                    min_value=1, max_value=100, value=10, step=1,
+                                    help="Annual CDR deployment cap (Gt/year)")
+
+st.sidebar.markdown("---")
 enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
 random_seed = st.sidebar.number_input("Random Seed (0 = random)", min_value=0, max_value=10000, value=42)
 monte_carlo_runs = st.sidebar.slider("Monte Carlo Runs", min_value=1, max_value=20, value=1, step=1,
@@ -76,7 +89,11 @@ if run_button:
                 np.random.seed(base_seed + i)
             sim = GCR_ABM_Simulation(years=years, enable_audits=enable_audits, price_floor=price_floor,
                                      adoption_rate=adoption_rate, inflation_target=inflation_target,
-                                     xcr_start_year=xcr_start_year, years_to_full_capacity=years_to_full_capacity)
+                                     xcr_start_year=xcr_start_year, years_to_full_capacity=years_to_full_capacity,
+                                     cdr_learning_rate=cdr_learning_rate,
+                                     conventional_learning_rate=conventional_learning_rate,
+                                     scale_full_deployment_gt=scale_full_deployment_gt,
+                                     cdr_capacity_gt=cdr_capacity_gt)
             df_run = sim.run_simulation()
             df_run["run"] = i
             dfs.append(df_run)
@@ -92,10 +109,12 @@ if run_button:
                 "Sequestration_Tonnes": "mean",
                 "CDR_Sequestration_Tonnes": "mean",
                 "Conventional_Mitigation_Tonnes": "mean",
+                "Avoided_Deforestation_Tonnes": "mean",
                 "Temperature_Anomaly": ["mean", lambda x: x.quantile(0.1), lambda x: x.quantile(0.9)]
             })
             agg.columns = ["CO2_mean", "CO2_p10", "CO2_p90", "BAU_CO2_mean", "Seq_mean",
-                           "CDR_seq_mean", "Conv_seq_mean", "Temp_mean", "Temp_p10", "Temp_p90"]
+                           "CDR_seq_mean", "Conv_seq_mean", "AD_seq_mean",
+                           "Temp_mean", "Temp_p10", "Temp_p90"]
             agg = agg.reset_index()
         else:
             agg = None
@@ -294,6 +313,16 @@ if st.session_state.df is not None:
             ),
             row=2, col=1, secondary_y=False
         )
+        fig.add_trace(
+            go.Bar(
+                x=df_tab['Year'],
+                y=df_tab['Avoided_Deforestation_Tonnes'] if not multi_run else df_tab['AD_seq_mean'],
+                name="Avoided Deforestation",
+                marker_color='#8c564b',
+                opacity=0.7
+            ),
+            row=2, col=1, secondary_y=False
+        )
 
         # Projects operational (secondary axis)
         fig.add_trace(
@@ -334,7 +363,7 @@ if st.session_state.df is not None:
         with col3:
             bau_growth = ((df_climate.iloc[-1]['BAU_CO2_ppm'] / 420.0) - 1) * 100
             st.metric("BAU CO2 Growth", f"+{bau_growth:.1f}%")
-        col4, col5 = st.columns(2)
+        col4, col5, col6 = st.columns(3)
         with col4:
             if multi_run and "CDR_seq_mean" in df_climate.columns:
                 cdr_total = df_climate['CDR_seq_mean'].sum()
@@ -347,6 +376,12 @@ if st.session_state.df is not None:
             else:
                 conv_total = df_single['Conventional_Mitigation_Tonnes'].sum()
             st.metric("Conventional Delivered", f"{conv_total:.2e} tonnes")
+        with col6:
+            if multi_run and "AD_seq_mean" in df_climate.columns:
+                ad_total = df_climate['AD_seq_mean'].sum()
+            else:
+                ad_total = df_single['Avoided_Deforestation_Tonnes'].sum()
+            st.metric("Avoided Deforestation Delivered", f"{ad_total:.2e} tonnes")
 
         # After climate view, switch back to single-run dataframe for detailed tabs
         df = df_single
@@ -909,15 +944,15 @@ if st.session_state.df is not None:
         """)
 
         st.warning("""
-        **Policy Prioritization**: Before 2050, policy multipliers make conventional mitigation more
-        attractive (0.7x R-value = more XCR per tonne) and CDR less attractive (2.0x R-value = fewer
-        XCR per tonne). After 2050, this reverses to prioritize CDR deployment. The transition occurs
-        smoothly between years 45-55.
+        **Policy Prioritization**: R multipliers are fixed at 1.0 per Chen (no time-shifted penalties).
+        Prioritization comes from costs, capital availability, and capacity limits. R still scales rewards
+        by cost-effectiveness relative to marginal CDR cost.
         """)
 
         st.error("""
-        **Capacity Limits**: Conventional mitigation reaches 80% of physical capacity by year 60 as
-        most emissions sources are already mitigated. This forces transition to CDR for continued CO2 reduction.
+        **Capacity Limits**: Conventional mitigation faces a hard-to-abate frontier. Availability tapers
+        toward the frontier over time and floors at a residual tail rather than cutting off entirely.
+        This shifts marginal growth to CDR as conventional potential saturates.
         """)
 
         # Chart A: Technology Cost Curves
@@ -1009,31 +1044,35 @@ if st.session_state.df is not None:
 
         st.markdown("""
         **How to read profitability**: When a line crosses zero from below, that channel becomes
-        economically viable and projects will initiate. Conventional is highly profitable early
-        (due to policy subsidy + lower costs), while CDR only becomes viable later as costs fall
-        and policy shifts.
+        economically viable and projects will initiate. Conventional is often profitable earlier
+        due to lower costs, while CDR becomes viable as costs fall and conventional availability tapers.
         """)
 
         # Chart D: Conventional Capacity Constraint
-        st.markdown("### Conventional Mitigation Capacity Utilization")
+        st.markdown("### Conventional Mitigation Capacity Availability (Tapered)")
         fig4 = go.Figure()
 
         fig4.add_trace(go.Scatter(
             x=df['Year'],
-            y=df['Conventional_Capacity_Utilization'] * 100,
-            name='Capacity Utilization',
+            y=df['Conventional_Capacity_Factor'] * 100,
+            name='Capacity Availability',
             line=dict(color='#2ca02c', width=3),
             fill='tozeroy',
             fillcolor='rgba(44, 160, 44, 0.2)',
             mode='lines'
         ))
 
-        fig4.add_hrect(y0=80, y1=100, fillcolor="red", opacity=0.1,
-                      annotation_text="Capacity Limit (80%)", annotation_position="top left")
+        fig4.add_hline(
+            y=10,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text="Residual floor (10%)",
+            annotation_position="top right"
+        )
 
         fig4.update_layout(
             xaxis_title="Year",
-            yaxis_title="Capacity Utilization (%)",
+            yaxis_title="Capacity Availability (%)",
             yaxis_range=[0, 100],
             hovermode='x unified',
             height=400
@@ -1041,10 +1080,10 @@ if st.session_state.df is not None:
         st.plotly_chart(fig4, use_container_width=True)
 
         st.markdown("""
-        **Capacity limit explanation**: Conventional mitigation (solar, wind, efficiency) can only
-        address existing emissions sources. By year 60, ~80% of feasible mitigation potential has
-        been captured. After this point, CDR (direct air capture, reforestation) becomes essential
-        for further CO2 reduction.
+        **Capacity taper explanation**: Conventional mitigation (solar, wind, efficiency) faces a
+        hard-to-abate tail. Availability tapers down toward a residual floor rather than shutting
+        off entirely, which keeps some conventional potential online while shifting marginal growth
+        to CDR over time.
         """)
 
         # Summary statistics
@@ -1058,14 +1097,14 @@ if st.session_state.df is not None:
                      delta=f"${df.iloc[0]['CDR_Cost_Per_Tonne']:.0f} → ${df.iloc[-1]['CDR_Cost_Per_Tonne']:.0f}/tonne")
 
         with col2:
-            policy_transition_year = df[df['CDR_Policy_Multiplier'] <= 1.5].iloc[0]['Year'] if len(df[df['CDR_Policy_Multiplier'] <= 1.5]) > 0 else "N/A"
-            st.metric("Policy Transition Year", f"Year {policy_transition_year}",
-                     delta="CDR penalty → CDR priority")
+            st.metric("Policy Multiplier (CDR)", f"{df.iloc[-1]['CDR_Policy_Multiplier']:.2f}",
+                     delta="Fixed at 1.0")
 
         with col3:
-            conv_cap_year = df[df['Conventional_Capacity_Utilization'] >= 0.79].iloc[0]['Year'] if len(df[df['Conventional_Capacity_Utilization'] >= 0.79]) > 0 else "N/A"
-            st.metric("Conventional Cap Reached", f"Year {conv_cap_year}",
-                     delta="80% capacity limit")
+            floor_threshold = df['Conventional_Capacity_Factor'].min() + 1e-6
+            conv_floor_year = df[df['Conventional_Capacity_Factor'] <= floor_threshold].iloc[0]['Year'] if len(df[df['Conventional_Capacity_Factor'] <= floor_threshold]) > 0 else "N/A"
+            st.metric("Conventional Floor Reached", f"Year {conv_floor_year}",
+                     delta="Residual availability floor")
 
     # Tab 6: Climate Equity
     with tab6:

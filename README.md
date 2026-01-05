@@ -55,11 +55,12 @@ Interactive web interface with:
 - **Data Export**: CSV download of full simulation results
 
 **Controls**:
-- Simulation years (10-100)
+- Simulation years (10-200, default 100)
 - XCR price floor ($0-$999)
 - GCR adoption rate (0-10 countries/year)
 - Enable/disable audits
 - Random seed for reproducibility
+- Monte Carlo runs (ensemble count)
 
 ## Project Structure
 
@@ -86,26 +87,27 @@ Interactive web interface with:
 **1 XCR = 1/R tonnes of CO₂e** with 100+ years durability
 
 - **CDR projects**: R = 1 (fixed)
-- **Conventional mitigation**: R = marginal_cost / price_floor
-- **Co-benefits**: R = 0.8 × marginal_cost / price_floor
+- **Conventional mitigation**: R = marginal_cost / marginal_cdr_cost
+- **Avoided deforestation**: R = marginal_cost / marginal_cdr_cost
 
-**XCR Minting**: `XCR = tonnes_sequestered / R`
+**XCR Minting**: `XCR = tonnes_sequestered * R`
 
-### Three Reward Channels
+### Reward Channels
 
-1. **CDR** (Carbon Dioxide Removal) - Direct carbon capture
-2. **Conventional Mitigation** - Renewables, efficiency
-3. **Co-benefits** - Ecosystem restoration, agro-ecology
+1. **CDR** (Carbon Dioxide Removal) - Direct carbon capture (physical tonnes)
+2. **Conventional Mitigation** - Renewables, efficiency (structural reductions)
+3. **Avoided Deforestation** - Land‑use emissions avoidance (physical tonnes)
+4. **Co-benefits** - Reward overlay (no additional tonnes)
 
 ### Economic Flow
 
 ```
 Countries join GCR system (adoption rate: 3.5/year default)
   → Projects sequester CO2
-  → Auditor verifies (2% error rate)
+  → Auditor verifies (1% error rate)
   → XCR minted fresh (increases supply)
   → Market trades XCR
-  → If price < floor → Central banks buy via CQE
+  → If price < floor → Central banks buy via CQE (budget‑capped, inflation‑aware)
   → CEA monitors stability → Adjusts price floor (5-year cycles)
 ```
 
@@ -116,10 +118,10 @@ Default values in `GCR_ABM_Simulation.__init__()`:
 - **Target CO2**: 350 ppm
 - **Price Floor**: $100 USD per XCR (configurable $0-$999)
 - **Adoption Rate**: 3.5 countries/year (configurable 0-10)
-- **Inflation Target**: 2% baseline with 25-40% correction rate
+- **Inflation Target**: 2% guidance with 25-40% correction rate; inflation starts at 0
 - **Stability Ratios**: 8:1 warning, 10:1 system brake
-- **CQE Budgets**: Starts with $0.69T across 5 founding countries, grows to $2.98T as all 50 countries join
-- **BAU CO2 Growth**: 0.5% annual (for comparison baseline)
+- **CQE Budgets**: 15% of cumulative private capital inflow, capped at 2% of active GDP
+- **BAU Emissions**: 40 GtCO2/yr, peak around year 6, plateau, then slow late‑century decline (~0.2%/yr)
 - **Project Development**: 2-4 years
 - **Audit Failure Penalty**: 50% of lifetime XCR burned
 
@@ -151,8 +153,9 @@ print(f"Total projects: {len(sim.projects_broker.projects)}")
 ### Modifying Parameters
 
 Edit `gcr_model.py` to adjust:
-- **Economic**: Price floor, inflation targets, CQE budgets per country
+- **Economic**: Price floor, inflation targets, CQE ratio and GDP cap
 - **Projects**: Base costs, sequestration rates, failure rates
+- **Learning**: CDR/conventional learning rates, scale damping behavior
 - **Policy**: Sigmoid damping sharpness, price floor revision cycles, adoption rate
 - **Market**: Sentiment decay/recovery rates
 - **Countries**: GDP, CQE capacity, tier/region assignments in country pool
@@ -162,11 +165,14 @@ See `CLAUDE.md` for detailed guidance on extending the model.
 ## Output Data
 
 Simulation returns pandas DataFrame with columns:
-- `Year`, `CO2_ppm`, `BAU_CO2_ppm`, `CO2_Avoided`
-- `Inflation`, `XCR_Supply`, `XCR_Minted`, `XCR_Burned`
-- `Market_Price`, `Price_Floor`, `Sentiment`, `CEA_Warning`
-- `Projects_Total`, `Projects_Operational`, `Sequestration_Tonnes`
-- `CQE_Spent`, `Active_Countries`, `CQE_Budget_Total`
+- `Year`, `CO2_ppm`, `BAU_CO2_ppm`, `CO2_Avoided`, `Temperature_Anomaly`
+- `Inflation`, `Market_Price`, `Price_Floor`, `Sentiment`, `CEA_Brake_Factor`
+- `XCR_Supply`, `XCR_Minted`, `XCR_Burned_Annual`, `XCR_Burned_Cumulative`, `Cobenefit_Bonus_XCR`
+- `Projects_Total`, `Projects_Operational`, `Projects_Development`, `Projects_Failed`
+- `Sequestration_Tonnes`, `CDR_Sequestration_Tonnes`, `Conventional_Mitigation_Tonnes`, `Avoided_Deforestation_Tonnes`, `Reversal_Tonnes`
+- `CQE_Spent`, `Annual_CQE_Spent`, `Annual_CQE_Budget`, `CQE_Budget_Utilization`, `XCR_Purchased`, `CQE_Budget_Total`
+
+See `CLAUDE.md` for the full column list (capital flows, climate physics, and learning curves).
 
 ## Documentation
 

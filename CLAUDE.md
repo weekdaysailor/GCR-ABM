@@ -18,23 +18,14 @@ The simulation implements a true multi-agent system with five distinct agent cla
 - Central system governor managing XCR supply and policy
 - Calculates project-specific R-values based on cost-effectiveness:
   - CDR projects (Channel 1): R = 1 (fixed)
-  - Conventional mitigation (Channel 2): R = marginal_cost / price_floor
-  - Co-benefits (Channel 3): R adjusted by co-benefit value (0.8x cost)
-- Monitors stability ratio (XCR Market Cap / Annual CQE Budget)
-- **Inflation-Adjusted CEA Brake** (PRIMARY CONSTRAINT): Brake thresholds and floor dynamically adjust based on inflation target
-  - **Low inflation target** (e.g., 0.5%): Lenient thresholds, higher brake floor (30%)
-    - Brake starts at 17.5:1 ratio
-    - Heavy brake floor: 30% of normal minting rate
-    - Accommodative: Allows substantial issuance for rapid climate action
-  - **Baseline** (2% target): Moderate thresholds, 13% brake floor
-    - Warning: 8:1, Brake start: 10:1, Heavy: 15:1
-    - Standard constraint level
-  - **High inflation target** (e.g., 6%): Strict thresholds, low brake floor (3%)
-    - Brake starts at 4:1 ratio
-    - Heavy brake floor: 3% of normal minting rate
-    - Restrictive: Prioritizes price stability over rapid scaling
-  - **Impact**: Changing inflation target from 0.5% → 6% reduces issuance by ~86%
-  - **See**: `docs/inflation_adjusted_brake.md` for detailed mechanics
+  - Conventional mitigation (Channel 2): R = marginal_cost / marginal_cdr_cost
+  - Avoided deforestation (Channel 3): R = marginal_cost / marginal_cdr_cost
+- Co-benefits are a reward overlay (no separate tonnes)
+- Monitors stability ratio (XCR Market Cap / CQE Budget)
+- **Inflation-Adjusted CEA Brake** (PRIMARY CONSTRAINT): Brake thresholds, heavy-brake floor, and inflation penalty scale with realized inflation (normalized to 2% baseline), plus a budget-utilization brake near CQE cap
+  - Base thresholds at 2%: warning 8:1, brake tiers 10:1 / 12:1 / 15:1
+  - Budget-utilization brake starts at 90% of annual CQE cap (floor 25%)
+  - **See**: `docs/inflation_adjusted_brake.md` for formulas and ranges
   - Creates negative feedback: High issuance → High ratio → Brake → Lower issuance
 - **Price Floor Adjustments**: Periodic 5-year policy revisions based on roadmap progress
   - Locked-in annual yield between revisions for market predictability
@@ -42,48 +33,39 @@ The simulation implements a true multi-agent system with five distinct agent cla
 
 **2. CentralBankAlliance** - `gcr_model.py:177`
 - Defends XCR price floor ($100 RCC default, configurable) using Carbon Quantitative Easing (CQE)
-- Sigmoid damping function: `W = 1/(1 + e^(k*(π - 0.03)))`
+- Sigmoid damping function centered at `1.5 × inflation_target`
   - `k = 12.0` controls brake sharpness
   - Willingness to defend floor decreases as inflation rises
-- When market_price < floor: creates new M0 reserves to purchase XCR
-- CQE interventions increase XCR supply and cause inflation
-- Represents global climate alliance with GDP-proportional CQE budgets
-- **Annual CQE Budget Caps**:
-  - Each country has annual CQE budget (e.g., USA: $50B/year = 10% of QE capacity)
-  - Total starting budget (5 countries): ~$68B/year
-  - Total budget at full adoption (50 countries): ~$196B/year
-  - Budget resets each year (tracked in `annual_cqe_spent`)
-  - **Hard cap**: Cannot defend floor when annual budget exhausted
-  - Price can fall below floor until next year
-  - **Realistic levels**: Designed to be binding constraint at gigatonne scale
-- **Dynamic Budget**: Total CQE budget grows as new countries join GCR system
+- When market_price < floor: creates new M0 reserves to purchase XCR (budget-capped)
+- CQE interventions affect inflation; impacts are bounded and mean‑reverted toward target
+- **Budget Model**: Total CQE budget is 5% of annual private capital inflow, capped at 0.5% of active GDP
 
 **3. ProjectsBroker** - `gcr_model.py:222`
-- Manages portfolio of mitigation projects across 3 channels
-- **Project Initiation**: Projects start when `(market_price / R) >= marginal_cost`
+- Manages portfolio of mitigation projects across 3 physical channels
+- **Project Initiation**: Projects start when `(market_price * R * brake_factor) >= marginal_cost`
 - **Dynamic Channel Distribution** (uses active countries only):
   - Channel 1 (CDR): Prefers tropical/developing countries (South America, Africa, Asia)
   - Channel 2 (Conventional): Prefers Tier 1 developed economies with infrastructure
-  - Channel 3 (Co-benefits): Prefers Tier 2/3 developing countries (ecosystem restoration)
+  - Channel 3 (Avoided Deforestation): Prefers tropical/developing countries (South America, Africa, Asia)
+- Co-benefits: reward overlay (no separate projects)
 - **Project Lifecycle**:
-  - Development phase: 2-4 years randomly assigned
+- Development phase: 1-2 years randomly assigned
   - Operational phase: Annual sequestration once developed
   - Stochastic health decay: 2% annual failure rate
 - Marginal costs increase with project count (resource depletion curve)
+- Capacity limits: CDR default 10 Gt/yr (slider 1-100), Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr
 
 **4. InvestorMarket** - `gcr_model.py:239`
 - Represents aggregate market sentiment (0.0 = panic, 1.0 = full trust)
-- **Price Discovery**: `Market_Price = Floor + (50 × Sentiment)`
-- **Sentiment Decay**:
-  - CEA 8:1 warning: 0.9x multiplier (linear)
-  - Inflation > 4%: 0.85x multiplier (exponential)
-- **Sentiment Recovery**: +0.05 when stable (no warning, inflation ≤ 3%)
+- **Price Discovery**: `Market_Price = Floor + (50 × Sentiment) + Capital_Demand_Premium`
+- **Sentiment Decay**: Warnings + inflation thresholds (1.5×, 2×, 3× target)
+- **Sentiment Recovery**: +2% of remaining gap when stable; bonus if CO2 is falling
 
 **5. Auditor** - `gcr_model.py:264`
 - Validates 100-year durability requirement for projects
 - **Annual audits** on all operational projects (controllable via `enable_audits` parameter)
-- 2% error rate in detection
-- **Audit Pass**: Mints fresh XCR = `tonnes_sequestered / R`
+- 1% error rate in detection
+- **Audit Pass**: Mints fresh XCR = `tonnes_sequestered * R`
 - **Audit Fail**: Burns 50% of project's lifetime XCR rewards, marks project as failed
 
 ### Country Adoption Mechanics
@@ -93,13 +75,10 @@ The simulation models gradual global adoption of the GCR system over time:
 **Country Pool** (50 countries across 3 tiers):
 - **Tier 1** (12 countries): High GDP economies (USA, China, Japan, Germany, UK, France, India, etc.)
   - GDP range: $1.6T - $27.0T
-  - CQE capacity: $0.035T - $0.5T
 - **Tier 2** (22 countries): Medium GDP economies (Mexico, Turkey, Saudi Arabia, Switzerland, etc.)
   - GDP range: $0.4T - $1.5T
-  - CQE capacity: $0.009T - $0.03T
 - **Tier 3** (16 countries): Developing economies (Vietnam, Bangladesh, Kenya, Ghana, etc.)
   - GDP range: $0.05T - $0.46T
-  - CQE capacity: $0.001T - $0.009T
 
 **Adoption Mechanics** (`adopt_countries()` - gcr_model.py:487):
 - Configurable adoption rate (default: 3.5 countries/year)
@@ -108,29 +87,27 @@ The simulation models gradual global adoption of the GCR system over time:
   - Uses square root of GDP to balance large/small economies
   - ±50% random factor ensures diversity
 - **Founding members** (5 countries at Year 0): USA, Germany, Brazil, Indonesia, Kenya
-- **CQE Budget**: Automatically recalculates as countries join
+**CQE Budget**: Uses annual private capital inflow and GDP cap (not fixed per-country budgets)
 
 **Impact on System**:
 - Projects can only be allocated to active countries
-- CQE budget grows with each new member
-- Market stability ratio (Market Cap / CQE Budget) affected by budget growth
+- CQE budget is recalculated from annual private inflows and capped by active GDP (adoption can raise the cap)
+- Market stability ratio (Market Cap / CQE Budget) moves with private capital inflows and GDP cap changes
 - Enables exploration of "early adopter club" vs "rapid global coordination" scenarios
 
 ### Execution Flow (per time step)
 
-Each simulation year executes in this order:
-0. `adopt_countries()` - New countries join GCR system based on adoption rate
-1. `chaos_monkey()` - 5% chance of inflation shock (+0.5-1.5%)
-2. Inflation correction toward 2% target (25-40% correction rate)
-3. `investor_market.update_sentiment()` - Adjust based on warnings and inflation
-4. `cea.update_policy()` - Monitor stability ratio, calculate brake factor, adjust price floor (periodic 5-year revisions)
-5. `projects_broker.initiate_projects()` - Start new projects where economics favor it
-6. `projects_broker.step_projects()` - Advance all projects (development progress, stochastic decay)
-7. `auditor.verify_and_mint_xcr()` - Audit operational projects, mint/burn XCR **with brake factor applied**
-8. `central_bank.defend_floor()` - CQE intervention if price < floor (subject to annual budget cap)
-9. Update CO2 levels based on verified sequestration
+Each simulation year executes in this order (simplified):
+1. Countries adopt the system (if active).
+2. Inflation shock/noise is applied, then corrected toward target.
+3. Investor sentiment updates when the system is active.
+4. Capital flows and price discovery update when the system is active.
+5. CEA updates brake factor and price floor (periodic revisions).
+6. Projects initiate (if active), then advance and are audited.
+7. CQE defends the price floor if needed (annual cap).
+8. Carbon cycle updates CO2 and temperature.
 
-**Critical Flow**: Projects sequester CO2 → Auditor verifies → XCR minted fresh (increases supply) × **brake_factor** × capacity → Market trades XCR → If price < floor → Central banks buy with CQE (annual budget cap) → CEA monitors stability → Calculates brake factor → Adjusts price floor periodically
+**Critical Flow**: Projects sequester CO2 → Auditor verifies → XCR minted × brake_factor × capacity → Market trades XCR → If price < floor → CQE purchases within budget → CEA updates stability and floor.
 
 ### Inflation Constraint Feedback Loop (NEW)
 
@@ -166,12 +143,12 @@ Lower issuance → Ratio stabilizes
 Brake releases as ratio falls
 ```
 
-**Combined Effect**: These mechanisms create negative feedback loops that automatically constrain issuance when inflation pressure builds. The brake provides graduated response (50% → 25% → 10% minting reduction), while budget caps provide hard limits (cannot defend floor when exhausted).
+**Combined Effect**: These mechanisms constrain issuance when inflation pressure builds. The brake provides graduated response, while CQE budgets provide hard limits on floor defense.
 
 **Key Parameters**:
-- Brake thresholds: 10:1 light, 12:1 medium, 15:1 heavy
-- Annual CQE budgets: GDP-proportional, reset yearly
-- Brake calculation: `XCR_minted = base_minting × capacity × brake_factor`
+- Brake thresholds: 10:1 light, 12:1 medium, 15:1 heavy (inflation-adjusted)
+- CQE budget: 5% of annual private capital inflow, capped at 0.5% of active GDP
+- Minting: `XCR = verified_sequestration * R * capacity * brake_factor`
 
 ## Key Technical Concepts
 
@@ -184,7 +161,7 @@ The model properly separates **stocks** (atmospheric CO2 concentration) from **f
 - This is the "bathtub water level" we're trying to reduce to 350 ppm
 
 **Flows (measured in GtCO2/year):**
-- BAU emissions: Constant 40 GtCO2/year growing at 1% (fossil fuels + land use)
+- BAU emissions: 40 GtCO2/year, peak around year 6, plateau, then very gradual late‑century decline (~0.2%/yr)
 - GCR sequestration: Variable based on project deployment (0 → 100+ Gt/year)
 - Net flow = Emissions - Sequestration
 
@@ -206,17 +183,17 @@ From Chen paper (Definition Box 9):
 - **1 XCR = 1/R tonnes of mitigated CO₂e with 100+ years durability**
 - R enables adjustable rewards while maintaining single instrument
 - **Purpose**: R is ONLY used to increase the reward for difficult mitigation (cost-effectiveness)
-- XCR minting formula: `XCR = tonnes_mitigated / R`
+- XCR minting formula: `XCR = tonnes_mitigated * R`
 - Example (price floor = $100):
   - CDR project at $100/tonne: R=1, receives 1 XCR per tonne
-  - Solar project at $150/tonne: R=1.5, receives 0.67 XCR per tonne
-  - Reforestation at $75/tonne: R=0.75, receives 1.33 XCR per tonne
+  - Solar project at $150/tonne: R=1.5, receives 1.5 XCR per tonne (0.67 tonnes per XCR)
+  - Reforestation at $75/tonne: R=0.75, receives 0.75 XCR per tonne (1.33 tonnes per XCR)
 
-**Project R-values** are set at project initiation based on marginal cost and determine the XCR/tonne ratio. This ensures cost-effective allocation of rewards across different mitigation technologies.
+**Project R-values** are set at project initiation based on marginal cost relative to marginal CDR cost and determine the XCR/tonne ratio. This ensures cost-effective allocation of rewards across different mitigation technologies.
 
 ### Technology Learning Curves & Policy Prioritization
 
-The model implements **dynamic technology costs** and **time-dependent policy prioritization** to capture realistic technology evolution and strategic climate policy goals:
+The model implements **dynamic technology costs** and fixed (non‑penalizing) policy multipliers to capture realistic technology evolution:
 
 #### Learning Curves (Cost Reduction with Deployment)
 
@@ -228,37 +205,23 @@ As technologies deploy at scale, costs decrease following experience curve dynam
 - **Learning Rates**:
   - **CDR**: 20% per doubling (aggressive improvement for early-stage tech)
   - **Conventional**: 12% per doubling (moderate, already mature technologies)
-  - **Co-benefits**: 8% per doubling (nature-based, limited technological gains)
-
-- **Result**: CDR starts expensive ($100+/tonne) but becomes cost-competitive ($50-70/tonne) by 2060-2080 as deployment scales
+  - **Co-benefits**: 8% per doubling (defined, but co-benefits are a reward overlay)
 
 #### Policy R-Multipliers (Channel Prioritization)
 
-Policy applies time-dependent multipliers to R-values to prioritize conventional mitigation early and shift to CDR post-2050:
+Policy multipliers are **fixed at 1.0** for CDR and conventional mitigation (no penalties or time shifts).
 
-**Pre-2050 (Conventional First Era)**:
-- CDR: `R_effective = R_base × 2.0` → Penalized (fewer XCR/tonne, less attractive)
-- Conventional: `R_effective = R_base × 0.7` → Subsidized (more XCR/tonne, more attractive)
-- Co-benefits: `R_effective = R_base × 0.8` → Slight subsidy
-
-**Post-2050 (CDR Ramp-Up Era)**:
-- CDR: `R_effective = R_base × 1.0` → Normalized (full market access)
-- Conventional: `R_effective = R_base × 1.2` → Slight penalty (peak deployment past)
-- Co-benefits: `R_effective = R_base × 1.0` → Normalized
-
-**Transition**: Smooth sigmoid curve 2045-2055 avoids cliff effects
-
-**Rationale**: Aligns with Paris Agreement strategies—maximize near-term emissions reductions (conventional mitigation) while CDR technologies mature, then transition to CDR for net-negative emissions post-2050.
+**Rationale**: R-values are purely cost-effectiveness based per Chen; any prioritization is handled by costs, capital availability, and capacity limits.
 
 #### Conventional Capacity Limits
 
 Conventional mitigation (solar, wind, efficiency) faces physical limits:
 
-- **Capacity constraint**: 80% of emissions potential by year 60 (2060)
-- **Effect**: After ~80% utilization, no new conventional projects can initiate
-- **Implication**: Forces economic transition to CDR as conventional opportunities saturate
+- **Capacity constraint**: Conventional availability tapers toward an 80% hard‑to‑abate frontier by year 60 using a sigmoid curve, then floors at a 10% residual tail
+- **Effect**: Conventional project initiation tapers down as utilization approaches the frontier (no hard cutoff)
+- **Implication**: Encourages transition to CDR as conventional opportunities saturate
 
-**Combined Effect**: Early years dominated by conventional mitigation (double advantage: lower costs + policy subsidy). Mid-century transition as CDR costs fall and policy shifts. Late simulation dominated by CDR as conventional capacity exhausted.
+**Combined Effect**: Conventional mitigation dominates early due to lower costs. As conventional capacity tightens and CDR costs fall, CDR takes a larger share.
 
 ## Running the Simulation
 
@@ -305,18 +268,23 @@ venv/bin/streamlit run dashboard.py
 4. **Projects** - Portfolio analysis by country and channel, project status over time, failure rates, country adoption & CQE budget growth
 5. **Technology Economics** - **NEW!** Learning curves, policy R-multipliers, channel profitability, conventional capacity limits
    - Technology cost evolution (experience curves showing cost reduction over time)
-   - Policy multiplier transitions (conventional priority → CDR priority post-2050)
+   - Policy multipliers are fixed at 1.0 per Chen (no time-shifted priorities)
    - Channel profitability comparison (shows when each technology becomes economically viable)
-   - Conventional capacity utilization (80% limit visualized)
+   - Conventional capacity availability (taper to residual floor)
 6. **Climate Equity** - OECD vs non-OECD XCR flows, wealth transfer analysis, country-level net positions
 7. **Data Table** - Full simulation data with sorting, filtering, and CSV export (includes all new transparency columns)
 
 **Interactive Controls (Sidebar):**
-- Simulation years: 10-100
+- Simulation years: 10-200 (default 100)
 - XCR price floor (initial): $0-$999
 - GCR adoption rate: 0-10 countries/year
 - Enable/disable audits
 - Random seed for reproducibility
+- CDR learning rate (per doubling)
+- Conventional learning rate (per doubling)
+- CDR capacity cap (Gt/year)
+- Scale damping full‑scale deployment (Gt)
+- Monte Carlo runs (ensemble count)
 - Run button to execute simulation
 
 **Summary Metrics (8 cards):**
@@ -338,83 +306,48 @@ Located in `GCR_ABM_Simulation.__init__()` (gcr_model.py:380):
 - **Target CO2**: 350 ppm
 - **Price Floor (RCC)**: $100 USD per XCR (default, configurable $0-$999)
 - **Adoption Rate**: 3.5 countries/year (default, configurable 0-10)
-- **Inflation Target**: 2% baseline (configurable 0.1%-10%, PRIMARY constraint on issuance)
-- **Inflation Correction**: 25-40% correction rate toward target
-- **Inflation-Adjusted CEA Brake**: Thresholds and floor scale with inflation target
-  - Low target (0.5%): Brake starts 17.5:1, floor 30% (lenient)
-  - Baseline (2%): Brake starts 10:1, floor 13% (moderate)
-  - High target (6%): Brake starts 4:1, floor 3% (strict)
-  - **Impact**: Changing target from 0.5%→6% reduces issuance by ~86%
-- **Annual CQE Budgets**: GDP-proportional, reset yearly, hard spending cap
-- **Price Floor Revisions**: Every 5 years based on roadmap progress
-- **BAU Emissions Flow**: 40 GtCO2/year constant emission rate (fossil fuels + land use)
-  - Grows at 1% annually (economic growth increases fossil fuel use)
-  - ~5.1 ppm/year initially, growing to ~6.8 ppm/year by year 50
-  - **Critical**: Emissions are a FLOW determined by human activity, not % of atmospheric stock
-  - CO2 only declines when sequestration exceeds emissions (net-zero achieved)
-- **CQE Budgets**: GDP-proportional across 50 countries - USA: $50B/year (10% QE capacity)
-  - Total starting (5 founding): ~$68B/year
-  - Total all 50 countries: ~$196B/year
-  - **Realistic levels** designed to be binding constraint at gigatonne scale
-- **Auditor Error Rate**: 2% (Class 3 operational risk)
-- **Chaos Monkey**: 5% chance per year of 0.5-1.5% inflation shock
+- **Inflation Target**: 2% guidance; inflation stays at 0 pre‑start, then is corrected toward target
+- **CEA Brake**: Thresholds 8:1 / 10:1 / 12:1 / 15:1 (inflation‑adjusted)
+- **CQE Budget**: 5% of annual private capital inflow, capped at 0.5% of active GDP
+- **Price Floor Revisions**: Every 5 years based on roadmap progress, inflation, and temperature
+- **BAU Emissions Flow**: 40 GtCO2/year, peak around year 6, plateau, then slow late‑century decline (~0.2%/yr)
+- **Capacity Limits**: CDR default 10 Gt/yr (slider 1-100), Conventional 30 Gt/yr
+- **Auditor Error Rate**: 1% (Class 3 operational risk)
+- **Chaos Monkey**: 5% chance per year of 0.5-1.5% inflation shock (only after GCR start)
 
 ### Gigatonne-Scale Operation
 
-The model implements **deployment-based learning curves** where project scale grows with cumulative industry experience, not calendar time:
+The model uses **deployment-based scale damping** where project size grows with cumulative industry experience, not calendar time.
 
 **Learning-by-Doing Curve (Project Scale Damping)**:
-
-Project sizes scale with cumulative deployment across all channels:
-- **0-10 Gt deployed**: 15-20% scale → 1.5-20 MT/project (pilot scale)
-- **10-100 Gt deployed**: 20-40% scale → 2-40 MT/project (early commercial)
-- **100-300 Gt deployed**: 40-90% scale → 4-90 MT/project (commercial scale)
-- **300-500 Gt deployed**: 90-100% scale → 9-100 MT/project (industrial scale)
-- **500+ Gt deployed**: 100% scale → 10-100 MT/project (full industrial scale)
-
-**Key Insight**: As the industry deploys more total capacity, engineers learn to build bigger facilities. A world that has deployed 300 Gt cumulatively has the experience to build 90 MT plants; a world with only 10 Gt deployed is still at pilot scale.
-
-**Expected Aggregate Sequestration Timeline**:
-- **Year 5**: ~1-2 Gt/year (early deployments, ~15% scale)
-- **Year 10**: ~5-10 Gt/year (~20% scale, 20-30 Gt cumulative)
-- **Year 20**: ~20-30 Gt/year (~60% scale, 150-200 Gt cumulative)
-- **Year 25-30**: ~40-60 Gt/year (~95-100% scale, 300-600 Gt cumulative, net-zero achieved)
-- **Year 35-50**: ~80-110 Gt/year (full scale, 1000+ Gt cumulative, net-negative emissions)
+- Sigmoid from **7% to 100%** scale across **0 → 30 Gt** cumulative deployment (industry-wide, default).
+- Midpoint at ~**9 Gt** (30% of full scale) for a smooth transition.
 
 **Scaling Mechanics**:
-- Base project scale: 10-100 MT/year (random uniform distribution)
-- Scale damper applied at project creation: `actual_scale = base_scale × damper(cumulative_gt)`
-- Damper uses sigmoid curve: 15% → 100% from 0 Gt → 500 Gt cumulative
-- Inflection point: 150 Gt cumulative (mid-commercial transition)
-- 300 projects/year initiation rate (with 50 active countries)
-- Development lag (2-4 years) delays operational capacity
-- CEA brake and CQE budget caps constrain aggressive growth
+- Base project scale: **10-100 MT/year** (random uniform).
+- Actual scale: `base_scale × damper(cumulative_gt)`.
+- Project initiation: **Capital- and capacity-limited**, scaled by climate urgency (no per‑country caps).
+- Development lag: **1-2 years** before becoming operational.
+- CEA brake and CQE budget caps constrain aggressive growth.
 
 **Interaction with Learning Curves**:
-- **Cost learning curves** (already present): Make projects **economically viable** over time
-  - CDR: 20% cost reduction per doubling (expensive → cheap)
-  - Conventional: 12% cost reduction per doubling
-  - Co-benefits: 8% cost reduction per doubling
-- **Scale learning curves** (NEW): Make projects **physically buildable** at larger scale
-  - All channels: Scale increases with total cumulative deployment
-  - Industry-wide learning: CDR experience helps conventional scaling and vice versa
+- Cost learning curves: **CDR 20%** and **Conventional 12%** cost reduction per doubling.
+- Scale learning curves: Industry-wide; experience in one channel supports scale in the other.
+- Co-benefit overlay: **15% of minted XCR** redistributed by project co-benefit scores (no extra tonnes).
 
 **Realistic Constraints**:
-- Learning-by-doing: Projects start small, scale as industry gains experience
-- Development time: 2-4 years from initiation to operational
-- Stochastic failure: 2% annual decay rate
-- Economic limits: CEA brake (stability ratio) + CQE budget caps (inflation control)
-- Physical limits: Channel-specific capacity caps (Gt/year)
+- Stochastic failure: **2% annual decay rate**.
+- Economic limits: CEA brake + CQE budget caps.
+- Physical limits: **CDR default 10 Gt/yr (slider 1-100)**, **Conventional 30 Gt/yr**.
 
 Located in `ProjectsBroker.__init__()` (gcr_model.py:419):
-- **Base Costs**: CDR=$100/tonne, Conventional=$80/tonne, Co-benefits=$70/tonne
+- **Base Costs**: CDR=$100/tonne, Conventional=$80/tonne
 - **Project Scale**: 10M-100M tonnes/year base (damped by cumulative deployment)
-- **Scale Damping**: Enabled by default, full scale at 500 Gt cumulative deployment
-- **Project Initiation Rate**: 2 projects per active country per channel per year (scales with adoption)
-- **Maximum Rate**: 50 projects per channel per year (safety cap = 150 total/year)
+- **Scale Damping**: Enabled by default, full scale at 45 Gt cumulative deployment (min scale ~7%, slider 10–50 Gt)
+- **Project Initiation Rate**: Capital‑limited (no per‑country caps), scaled by urgency
 - **Development Time**: 2-4 years randomly assigned
 - **Project Failure**: 2% annual stochastic decay rate
-- **Resource Depletion**: Logarithmic scaling (1.6x at 10,000 projects vs 151x with linear)
+- **Resource Depletion**: Logarithmic scaling (15% per order-of-magnitude project count)
 
 ## Data Structures
 
@@ -436,27 +369,40 @@ class Project:
     total_xcr_minted: float
 ```
 
-Note: Projects store both `r_base` (cost-effectiveness) and `r_effective` (with policy multiplier applied). XCR minting uses `r_effective` which is locked in at project creation.
+Note: Projects store both `r_base` (cost-effectiveness) and `r_effective` (with policy multiplier applied). XCR minting uses `r_effective` which is locked in at project creation. CDR, Conventional, and Avoided Deforestation projects are initiated; co-benefits are handled as an overlay.
 
 ### Simulation Output DataFrame
 
-**Core Columns** (original):
-Year, CO2_ppm, BAU_CO2_ppm, CO2_Avoided, Inflation, XCR_Supply, XCR_Minted, XCR_Burned, Market_Price, Price_Floor, Sentiment, Projects_Total, Projects_Operational, Sequestration_Tonnes, CEA_Warning, CQE_Spent, Active_Countries, CQE_Budget_Total, Capacity
+**Core Columns**:
+Year, CO2_ppm, BAU_CO2_ppm, CO2_Avoided, Inflation, Market_Price, Price_Floor, Sentiment,
+XCR_Supply, XCR_Minted, XCR_Burned_Annual, XCR_Burned_Cumulative, Cobenefit_Bonus_XCR,
+Projects_Total, Projects_Operational, Projects_Development, Projects_Failed,
+Sequestration_Tonnes, CDR_Sequestration_Tonnes, Conventional_Mitigation_Tonnes, Avoided_Deforestation_Tonnes,
+Reversal_Tonnes, Human_Emissions_GtCO2, Conventional_Installed_GtCO2, CEA_Warning, CQE_Spent, XCR_Purchased,
+Active_Countries, CQE_Budget_Total, Capacity
 
-**Inflation Constraint Columns** (NEW):
-- **CEA_Brake_Factor**: Minting rate multiplier (1.0 = no brake, 0.1 = heavy brake at 15:1 ratio)
+**CQE & Inflation Columns**:
+- **CEA_Brake_Factor**: Minting rate multiplier (1.0 = no brake)
 - **Annual_CQE_Spent**: CQE spending this year (resets annually)
-- **Annual_CQE_Budget**: Total annual CQE budget (sum of all active countries)
-- **CQE_Budget_Utilization**: Percentage of annual budget used (0.0-1.0, 1.0 = exhausted)
+- **Annual_CQE_Budget**: Total annual CQE cap (global, GDP-capped)
+- **CQE_Budget_Utilization**: Percentage of annual budget used (0.0-1.0)
 
-**Transparency Columns** (for learning curves & policy):
-- **Technology Costs** (learning-adjusted): `CDR_Cost_Per_Tonne`, `Conventional_Cost_Per_Tonne`
-- **Cumulative Deployment** (learning progress): `CDR_Cumulative_GtCO2`, `Conventional_Cumulative_GtCO2`
-- **Policy Multipliers**: `CDR_Policy_Multiplier`, `Conventional_Policy_Multiplier`
-- **R-Values**: `CDR_R_Base`, `CDR_R_Effective`, `Conventional_R_Base`, `Conventional_R_Effective`
-- **Profitability**: `CDR_Profitability`, `Conventional_Profitability`
-- **Co-benefit Bonus**: `Cobenefit_Bonus_XCR` (Robin Hood redistribution overlay, no additional tonnes)
-- **Capacity Constraints**: `Conventional_Capacity_Utilization`, `Conventional_Capacity_Available`
+**Capital Market Columns**:
+- `Net_Capital_Flow`, `Capital_Demand_Premium`, `Forward_Guidance`
+- `Capital_Inflow_Cumulative`, `Capital_Outflow_Cumulative`
+
+**Climate Physics Columns**:
+- `Temperature_Anomaly`, `Ocean_Uptake_GtC`, `Land_Uptake_GtC`, `Airborne_Fraction`
+- `Ocean_Sink_Capacity`, `Land_Sink_Capacity`, `Permafrost_Emissions_GtC`, `Fire_Emissions_GtC`
+- `Cumulative_Emissions_GtC`, `Climate_Risk_Multiplier`, `C_Ocean_Surface_GtC`, `C_Land_GtC`
+
+**Technology & Policy Columns**:
+- `CDR_Cost_Per_Tonne`, `Conventional_Cost_Per_Tonne`
+- `CDR_Cumulative_GtCO2`, `Conventional_Cumulative_GtCO2`
+- `CDR_Policy_Multiplier`, `Conventional_Policy_Multiplier`
+- `CDR_R_Base`, `CDR_R_Effective`, `Conventional_R_Base`, `Conventional_R_Effective`
+- `CDR_Profitability`, `Conventional_Profitability`
+- `Conventional_Capacity_Utilization`, `Conventional_Capacity_Available`, `Conventional_Capacity_Factor`
 
 All transparency columns are exported to CSV and visible in the dashboard tabs.
 
@@ -471,49 +417,49 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 
 **Core Economic Parameters**:
 - **Sigmoid damping sharpness** (k=12.0 in CentralBankAlliance): Controls how aggressively banks brake during inflation
-- **Sentiment rates** (InvestorMarket): Decay (0.9, 0.85) vs recovery (0.05)
+- **Sentiment dynamics** (InvestorMarket): 3% decay on new warnings, 0.5% on persistent warnings; inflation decay 6%/3%/0.5% at 3x/2x/1.5x target; recovery is 2% of gap plus CO2/forward-guidance bonuses
 - **Inflation correction**: 25-40% rate toward 2% target each year
+- **Seed capital** (CapitalMarket): `seed_capital_usd` ($20B) and `seed_market_cap_usd` ($50B) bootstrap early project formation when XCR supply is small
+- **Capital demand neutrality**: Starts around ~0.6 and ramps down to ~0.3 over ~10 years after XCR start (net inflows once `combined_attractiveness` exceeds the current threshold)
 - **Project failure rates**: 2% annual stochastic decay
 - **Clawback severity**: Currently 50% of lifetime XCR burned on audit failure
 - **Price floor adjustments**: 5-year revision cycle with locked yields between revisions
-- **Adoption rate**: Controls how quickly countries join (affects CQE budget growth)
+- **Adoption rate**: Controls how quickly countries join (affects GDP cap and project allocation)
 
-**Inflation Constraint Parameters** (NEW):
+**Inflation Constraint Parameters**:
 - **CEA brake thresholds** (`CEA.calculate_brake_factor()` - gcr_model.py:150):
-  - 10:1 ratio → Start brake (1.0x → 0.5x reduction)
-  - 12:1 ratio → Medium brake (0.5x → 0.25x reduction)
-  - 15:1 ratio → Heavy brake (0.1x, 90% reduction)
-  - Adjust thresholds to make constraint tighter (lower ratios) or looser (higher ratios)
-- **Annual CQE budgets** (`CentralBankAlliance.__init__()` - gcr_model.py:243):
-  - Default: Sum of GDP-proportional country budgets (~$2.7T starting)
-  - Hard cap enforced in `defend_floor()`
-  - Reduce budgets to make constraint bite harder (exhaustion more likely)
-  - Increase to allow more price floor defense before constraint activates
+  - Base thresholds at 2% inflation: warning 8:1, brake 10:1 / 12:1 / 15:1
+  - Thresholds scale with **realized inflation** (lower inflation → lenient, higher inflation → strict)
+  - Heavy brake floor ranges from ~30% (low inflation) to ~1% (very high inflation)
+- **Budget utilization brake**:
+  - Starts at 90% of annual CQE cap, floors at 25%
+- **CQE budget** (`CentralBankAlliance.update_cqe_budget()` - gcr_model.py:374):
+  - 5% of annual private capital inflow, capped at 0.5% of active GDP
+  - Global annual cap (not per-country budgets)
 
 **Learning Curve Parameters** (`ProjectsBroker.__init__()` - gcr_model.py:238):
-- **Learning rates**: CDR=20%, Conventional=12%
+- **Learning rates**: CDR=20%, Conventional=12% (dashboard sliders can override)
   - Modify to explore optimistic/pessimistic technology scenarios
   - Higher learning rate = faster cost reduction
 - **Reference capacity**: Set on first deployment (used as baseline for learning calculations)
-- **Resource depletion rate**: Currently 1.5% cost increase per project
+- **Resource depletion**: Logarithmic cost lift (1 + 0.15 × log10(project_count + 1))
   - Balances learning curve gains with resource scarcity
 - **Co-benefit pool**: `cobenefit_pool_fraction` (0.15) holds back XCR for redistribution based on project co-benefit scores
 
 **Policy Prioritization Parameters** (`CEA.calculate_policy_r_multiplier()` - gcr_model.py:157):
-- **Transition timing**: Midpoint year 50, width 10 years (currently 2045-2055)
-- **Pre-2050 multipliers**: CDR=2.0x penalty, Conventional=0.7x subsidy
-- **Post-2050 multipliers**: CDR=1.0x neutral, Conventional=1.2x penalty
-- **Sigmoid steepness**: k=0.8 controls smoothness of transition
+- **Multipliers**: Fixed at 1.0 for CDR and conventional mitigation (no penalties)
+- **Co-benefits**: Overlay only; no time‑varying multipliers
 
 **Capacity Constraint Parameters** (`ProjectsBroker.__init__()` - gcr_model.py:260):
-- **Conventional capacity limit**: 80% (default)
+- **Conventional capacity frontier**: 80% by year 60 (default) with a 10% residual floor
 - **Limit reach year**: 60 (year when limit is hit)
+- **Taper**: Conventional initiation tapers as utilization approaches the limit (no hard cutoff)
 - Adjust these to model different mitigation potential assumptions
 
 ### Understanding R-Value Mechanics
-- When modifying project economics, remember: Higher R_effective = fewer XCR per tonne
-- Projects are profitable when: `(market_price / R_effective) >= marginal_cost`
-- **R_base** captures cost-effectiveness, **R_effective** = R_base × policy_multiplier
+- When modifying project economics, remember: Higher R_effective = more XCR per tonne
+- Projects are profitable when: `(market_price * R_effective * brake_factor) >= marginal_cost`
+- **R_base** captures cost-effectiveness, **R_effective** = R_base × policy_multiplier (currently fixed at 1.0)
 - XCR minting always uses R_effective (locked in at project creation)
 - **Important**: R is for cost-effectiveness and policy prioritization, not macro stability control
 
@@ -535,14 +481,13 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - To test constraint mechanisms: Run `venv/bin/python test_inflation_constraint.py` to verify brake and budget dynamics
 
 **Technology Transition Issues**:
-- If CDR never becomes competitive: Increase CDR learning rate (>20%), reduce policy penalty multiplier (<2.0x), or delay conventional capacity limit
-- If conventional dominates too long: Increase policy subsidy exit speed (higher k in sigmoid), advance transition midpoint (<50), or lower capacity limit year
-- If technology transition too abrupt: Widen transition window (>10 years), reduce sigmoid steepness (k<0.8)
-- If costs drop unrealistically fast: Reduce learning rates, increase resource depletion rate (>1.5% per project)
-- If costs don't drop enough: Increase learning rates, ensure projects are actually deploying (check profitability), reduce resource depletion
+- If CDR never becomes competitive: Increase CDR learning rate (>20%), reduce CDR base costs, or tighten conventional capacity limits
+- If conventional dominates too long: Lower the conventional capacity limit year or reduce the residual floor to shift more growth to CDR
+- If the transition feels too abrupt: Increase the conventional capacity limit year or raise the residual floor to soften the taper
+- If costs drop unrealistically fast: Reduce learning rates or increase the depletion coefficient (0.15 in the log scaling)
+- If costs don't drop enough: Increase learning rates, ensure projects are deploying (check profitability), reduce resource depletion
 
 **Debugging Technology Dynamics**:
-- Check Technology Economics dashboard tab to visualize cost curves, policy transitions, and profitability
+- Check Technology Economics dashboard tab to visualize cost curves, capacity taper, and profitability
 - Export DataFrame and examine transparency columns (costs, cumulative deployment, R-values, profitability)
-- Verify conventional capacity hits limit around intended year (check `Conventional_Capacity_Utilization` column)
-- Confirm policy multipliers transition smoothly (should see sigmoid curve, not step function)
+- Verify conventional capacity reaches the intended frontier year (check `Conventional_Capacity_Utilization` and `Conventional_Capacity_Factor`)

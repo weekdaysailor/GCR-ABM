@@ -19,6 +19,16 @@ class ChannelType(Enum):
     CDR = 1          # Carbon Dioxide Removal (R=1 fixed)
     CONVENTIONAL = 2  # Conventional mitigation (R adjustable)
     COBENEFITS = 3   # Co-benefits (R adjustable)
+    AVOIDED_DEFORESTATION = 4  # Avoided deforestation (LUC mitigation)
+
+CDR_FAILURE_REVERSAL_FRACTION = 0.10
+CONVENTIONAL_FAILURE_REVERSAL_FRACTION = 0.50
+
+def get_failure_reversal_fraction(channel: ChannelType) -> float:
+    """Return the fraction of stored/avoided emissions that reverses on failure."""
+    if channel in (ChannelType.CONVENTIONAL, ChannelType.AVOIDED_DEFORESTATION):
+        return CONVENTIONAL_FAILURE_REVERSAL_FRACTION
+    return CDR_FAILURE_REVERSAL_FRACTION
 
 # ============================================================================
 # DATA STRUCTURES
@@ -42,6 +52,7 @@ class Project:
     health: float = 1.0  # 1.0 = healthy, decays over time with stochastic events
     durability_years: int = 100  # Minimum durability
     total_sequestered_tonnes: float = 0.0  # Physical carbon delivered (for reversals)
+    structural_credited_tonnes: float = 0.0  # Structural mitigation credited once (conventional)
     co_benefit_score: float = 0.0  # Robin Hood overlay (0-1)
 
     # Backward compatibility property
@@ -189,6 +200,9 @@ class CEA:
         - At 1.0x baseline inflation: thresholds × 1.0 (baseline)
         - At 3.0x baseline inflation: thresholds × 0.5 (more strict)
         """
+        if self.inflation_target <= 0:
+            return 0.0
+
         # Normalize realized inflation to 2% baseline
         inflation_ratio = max(current_inflation, 0.0) / 0.02  # 2% is baseline
 
@@ -274,54 +288,20 @@ class CEA:
         self.brake_factor = self.calculate_brake_factor(ratio, global_inflation, budget_utilization)
 
     def calculate_policy_r_multiplier(self, channel: ChannelType, current_year: int) -> float:
-        """Calculate time-dependent policy R-multiplier for channel prioritization
+        """Calculate policy R-multiplier for channel prioritization
 
-        CDR: Always 1.0 (R = 1 fixed, per Chen paper)
-
-        Pre-2050 (Conventional First Era):
-        - Conventional: 0.7x subsidy (more XCR per tonne, more attractive)
-        - Co-benefits: 0.8x slight subsidy
-
-        Post-2050 (CDR Ramp-Up Era):
-        - Conventional: 1.2x penalty (peak deployment past)
-        - Co-benefits: 1.0x normalized
-
-        Transition: Smooth sigmoid 2045-2055
+        Per Chen, multipliers are fixed at 1.0 (no penalties or time shifts).
         """
-        # CDR R-value is FIXED at 1.0 (per Chen paper)
-        if channel == ChannelType.CDR:
-            return 1.0
-
-        # Define transition parameters
-        transition_midpoint = 40  # Earlier pivot toward CDR
-        transition_width = 10  # 10-year transition window
-
-        # Sigmoid transition: 0 (pre-2050) to 1 (post-2050)
-        # sigmoid(x) = 1 / (1 + e^(-k*(year - midpoint)))
-        k = 0.8  # Controls steepness
-        transition_progress = 1 / (1 + np.exp(-k * (current_year - transition_midpoint) / (transition_width / 2)))
-
-        # Define multipliers for each era
-        if channel == ChannelType.CONVENTIONAL:
-            pre_2050 = 0.6  # Less subsidy early
-            post_2050 = 1.3  # Stronger penalty later
-        else:  # COBENEFITS
-            pre_2050 = 0.8  # Slight subsidy early
-            post_2050 = 1.0  # Normalized later
-
-        # Interpolate between eras using sigmoid
-        multiplier = pre_2050 + (post_2050 - pre_2050) * transition_progress
-
-        return multiplier
+        return 1.0
 
     def calculate_project_r_value(self, channel: ChannelType,
-                                  marginal_cost: float, price_floor: float,
+                                  marginal_cost: float, benchmark_cdr_cost: float,
                                   current_year: int = 0) -> tuple[float, float]:
         """Calculate R value for a project based on cost-effectiveness
 
         From Chen paper:
         - CDR (Channel 1): R = 1 (fixed)
-        - Conventional (Channel 2): R = marginal_cost / price_floor
+        - Conventional (Channel 2): R = marginal_cost / marginal_cdr_cost
         - Co-benefits (Channel 3): R adjusted by co-benefit value
 
         Returns: (r_base, r_effective)
@@ -331,13 +311,13 @@ class CEA:
         # Calculate base R-value from cost-effectiveness
         if channel == ChannelType.CDR:
             r_base = 1.0
-        elif channel == ChannelType.CONVENTIONAL:
+        elif channel in (ChannelType.CONVENTIONAL, ChannelType.AVOIDED_DEFORESTATION):
             # R represents cost-effectiveness relative to CDR baseline
-            r_base = marginal_cost / price_floor
+            r_base = marginal_cost / benchmark_cdr_cost if benchmark_cdr_cost > 0 else 1.0
             r_base = max(0.1, r_base)  # Minimum R to prevent division issues
         else:  # COBENEFITS
             # Simplified: assume co-benefits reduce effective cost by 20%
-            r_base = (marginal_cost * 0.8) / price_floor
+            r_base = (marginal_cost * 0.8) / benchmark_cdr_cost if benchmark_cdr_cost > 0 else 1.0
             r_base = max(0.1, r_base)
 
         # Apply policy multiplier for channel prioritization
@@ -354,34 +334,32 @@ class CEA:
 class CentralBankAlliance:
     """Central Bank Alliance - Price floor defenders via CQE
 
-    CQE Budget Model (Gold Pool Inspired):
-    - Total CQE budget = 15% of cumulative private capital, capped by GDP share
+    CQE Budget Model (Flow-Based Backstop):
+    - Total CQE budget = 5% of annual private capital inflow, capped by GDP share
     - Apportioned among countries by GDP share
-    - Ensures private capital leads (≈85%), public backstop follows (≈15%)
-    - Matches historical gold intervention ratios (central banks ~10-20% of market)
+    - Ensures private capital leads; public backstop remains a minority share
     """
 
     def __init__(self, countries: Dict[str, Dict], price_floor: float = 100.0):
         self.countries = countries
         self.price_floor_rcc = price_floor
         self.total_cqe_budget = 0.0  # Calculated dynamically from private capital
-        self.cqe_ratio = 0.15  # CQE = 15% of cumulative private capital before GDP cap
-        self.gdp_cap_ratio = 0.02  # CQE cap as share of active-country GDP
+        self.cqe_ratio = 0.05  # CQE = 5% of annual private capital inflow before GDP cap
+        self.gdp_cap_ratio = 0.005  # CQE cap as share of active-country GDP
         self.total_cqe_spent = 0.0  # Track total M0 created (cumulative)
         self.annual_cqe_spent = 0.0  # Track spending this year (resets annually)
         self.current_budget_year = 0  # Track year for annual reset
 
-    def update_cqe_budget(self, cumulative_private_capital: float):
-        """Recalculate CQE budget as 15% of cumulative private capital, capped by GDP
+    def update_cqe_budget(self, annual_private_capital_inflow: float):
+        """Recalculate CQE budget as 5% of annual private capital inflow, capped by GDP
 
-        Gold Pool Model:
-        - Private capital pool: 80-90% of market
-        - CQE backstop capacity: 10-20% of market
-        - We use 15% ratio to sit mid-range of the 10-20% target band
+        Flow-Based Backstop:
+        - Private capital leads; CQE follows as a minority backstop
+        - Annual inflow sizing avoids cumulative overshoot
 
-        Budget is capped by active GDP (2% of active GDP).
+        Budget is capped by active GDP (0.5% of active GDP).
         """
-        market_cap_budget = cumulative_private_capital * self.cqe_ratio
+        market_cap_budget = annual_private_capital_inflow * self.cqe_ratio
         active_gdp_tril = sum(country["gdp_tril"] for country in self.countries.values())
         gdp_cap_budget = active_gdp_tril * 1e12 * self.gdp_cap_ratio
         self.total_cqe_budget = min(market_cap_budget, gdp_cap_budget)
@@ -405,6 +383,9 @@ class CentralBankAlliance:
         # Check if annual budget already exhausted
         if self.annual_cqe_spent >= self.total_cqe_budget:
             # Budget exhausted - cannot defend floor this year
+            return 0.0, 0.0, 0.0
+
+        if inflation_target <= 0:
             return 0.0, 0.0, 0.0
 
         # Sigmoid damping: willingness decreases as inflation rises
@@ -467,7 +448,7 @@ class ProjectsBroker:
         # Project scale damping (learning-by-doing curve)
         # Project size scales with cumulative deployment experience
         self.scale_damping_enabled = True
-        self.full_scale_deployment_gt = 200.0  # Moderated path to full industrial scale
+        self.full_scale_deployment_gt = 45.0  # Default full-scale threshold (Gt)
 
         # Co-benefits pool: fraction of XCR held back for redistribution
         self.cobenefit_pool_fraction = 0.15  # 15% of minted XCR is reallocated via co-benefit scores
@@ -476,40 +457,46 @@ class ProjectsBroker:
         self.base_costs = {
             ChannelType.CDR: 100.0,  # Starts at price floor
             ChannelType.CONVENTIONAL: 80.0,  # Initially cheaper
-            ChannelType.COBENEFITS: 70.0  # Co-benefits reduce costs
+            ChannelType.COBENEFITS: 70.0,  # Co-benefits reduce costs
+            ChannelType.AVOIDED_DEFORESTATION: 60.0  # Low-cost land-use mitigation
         }
 
         # Learning curve parameters (cost reduction with cumulative deployment)
         self.learning_rates = {
             ChannelType.CDR: 0.20,  # 20% cost reduction per doubling
             ChannelType.CONVENTIONAL: 0.12,  # 12% (already mature)
-            ChannelType.COBENEFITS: 0.08  # 8% (nature-based, limited tech gains)
+            ChannelType.COBENEFITS: 0.08,  # 8% (nature-based, limited tech gains)
+            ChannelType.AVOIDED_DEFORESTATION: 0.08  # Similar to nature-based
         }
 
         # Track cumulative deployment by channel (in tonnes CO2)
         self.cumulative_deployment = {
             ChannelType.CDR: 0.0,
             ChannelType.CONVENTIONAL: 0.0,
-            ChannelType.COBENEFITS: 0.0
+            ChannelType.COBENEFITS: 0.0,
+            ChannelType.AVOIDED_DEFORESTATION: 0.0
         }
 
         # Reference capacity for learning curves (first year deployment)
         self.reference_capacity = {
             ChannelType.CDR: None,  # Will be set on first project
             ChannelType.CONVENTIONAL: None,
-            ChannelType.COBENEFITS: None
+            ChannelType.COBENEFITS: None,
+            ChannelType.AVOIDED_DEFORESTATION: None
         }
 
         # Conventional capacity limit parameters
         self.conventional_capacity_limit = 0.80  # 80% of potential emissions
         self.conventional_capacity_limit_year = 60  # Reach limit by year 60 (2060 if start=2000)
+        self.conventional_capacity_min_factor = 0.10  # Residual hard-to-abate tail
 
         # Maximum annual sequestration capacity by channel (Gt/year)
         # Represents physical/technological limits on deployment scale
         self.max_capacity_gt_per_year = {
             ChannelType.CDR: 10.0,  # DAC/NCC upper bound
             ChannelType.CONVENTIONAL: 30.0,  # Earlier taper to force CDR reliance
-            ChannelType.COBENEFITS: 50.0  # Nature-based solutions - large potential
+            ChannelType.COBENEFITS: 50.0,  # Nature-based solutions - large potential
+            ChannelType.AVOIDED_DEFORESTATION: 5.0  # Land-use emissions ceiling
         }
 
     def calculate_project_scale_damper(self, cumulative_deployment_gt: float = 0.0) -> float:
@@ -525,12 +512,12 @@ class ProjectsBroker:
 
         Returns multiplier from 0.07 (7% scale) to 1.0 (full scale)
 
-        Deployment milestones (approx):
-        - 0-20 Gt: 7-20% scale (pilot projects)
-        - 20-80 Gt: 20-60% scale (early commercial)
-        - 80-160 Gt: 60-90% scale (commercial)
-        - 160-200 Gt: 90-100% scale (industrial)
-        - 200+ Gt: 100% scale (full industrial)
+        Deployment milestones (approx, default 45 Gt full-scale):
+        - 0-4.5 Gt: 7-20% scale (pilot projects)
+        - 4.5-18 Gt: 20-60% scale (early commercial)
+        - 18-36 Gt: 60-90% scale (commercial)
+        - 36-45 Gt: 90-100% scale (industrial)
+        - 45+ Gt: 100% scale (full industrial)
         """
         if not self.scale_damping_enabled:
             return 1.0
@@ -538,23 +525,24 @@ class ProjectsBroker:
         # Total cumulative deployment across all channels (industry-wide learning)
         total_deployment_gt = sum(self.cumulative_deployment.values()) / 1e9
 
+        min_scale = 0.07
+        if total_deployment_gt <= 0:
+            return min_scale
         if total_deployment_gt >= self.full_scale_deployment_gt:
             return 1.0  # Full scale
 
-        # Sigmoid curve for smooth scaling
-        # Maps 0 Gt → 0.07, 200 Gt → 1.0
-        # Inflection point at 60 Gt (mid-commercial)
-        midpoint = self.full_scale_deployment_gt * 0.3  # 60 Gt
-        steepness = 0.015  # Controls transition smoothness (adjusted for Gt scale)
+        # Sigmoid curve for smooth scaling (normalized to hit min/max at endpoints)
+        # Maps 0 Gt → min_scale, full_scale → 1.0
+        midpoint = self.full_scale_deployment_gt * 0.3  # Mid-commercial
+        steepness = 8.0 / max(self.full_scale_deployment_gt, 1e-6)
 
-        # Sigmoid: S(x) = 1 / (1 + e^(-k*(x - midpoint)))
-        sigmoid = 1 / (1 + np.exp(-steepness * (total_deployment_gt - midpoint)))
+        s0 = 1.0 / (1.0 + np.exp(-steepness * (0.0 - midpoint)))
+        s1 = 1.0 / (1.0 + np.exp(-steepness * (self.full_scale_deployment_gt - midpoint)))
+        s = 1.0 / (1.0 + np.exp(-steepness * (total_deployment_gt - midpoint)))
+        normalized = (s - s0) / max(s1 - s0, 1e-6)
+        normalized = np.clip(normalized, 0.0, 1.0)
 
-        # Scale from 5% to 100%
-        min_scale = 0.07
-        scale_damper = min_scale + (1.0 - min_scale) * sigmoid
-
-        return scale_damper
+        return min_scale + (1.0 - min_scale) * normalized
 
     def calculate_marginal_cost(self, channel: ChannelType) -> float:
         """Calculate current marginal cost using learning curves
@@ -601,21 +589,36 @@ class ProjectsBroker:
         """Calculate how much of conventional mitigation capacity has been utilized
 
         Returns value from 0.0 to 1.0 representing capacity utilization.
-        Reaches capacity_limit (0.8) by conventional_capacity_limit_year.
+        Reaches capacity_limit (0.8) by conventional_capacity_limit_year via sigmoid taper.
         """
+        if current_year <= 0:
+            return 0.0
         if current_year >= self.conventional_capacity_limit_year:
             return self.conventional_capacity_limit
 
-        # Linear progression to limit
+        # Sigmoid progression to limit (normalized to hit 0->1 across the window)
         progress = current_year / self.conventional_capacity_limit_year
-        utilization = progress * self.conventional_capacity_limit
+        k = 8.0  # Steepness of the taper curve
+        s0 = 1.0 / (1.0 + np.exp(-k * (0.0 - 0.5)))
+        s1 = 1.0 / (1.0 + np.exp(-k * (1.0 - 0.5)))
+        s = 1.0 / (1.0 + np.exp(-k * (progress - 0.5)))
+        normalized = (s - s0) / max(s1 - s0, 1e-6)
+        utilization = np.clip(normalized, 0.0, 1.0) * self.conventional_capacity_limit
 
         return utilization
 
     def is_conventional_capacity_available(self, current_year: int) -> bool:
         """Check if conventional mitigation capacity is still available"""
+        return self.get_conventional_capacity_factor(current_year) > self.conventional_capacity_min_factor
+
+    def get_conventional_capacity_factor(self, current_year: int) -> float:
+        """Return taper factor for conventional project initiation (0.0-1.0)."""
         utilization = self.get_conventional_capacity_utilization(current_year)
-        return utilization < self.conventional_capacity_limit
+        if self.conventional_capacity_limit <= 0:
+            return 1.0
+        utilization_ratio = min(utilization / self.conventional_capacity_limit, 1.0)
+        factor = 1.0 - utilization_ratio
+        return max(self.conventional_capacity_min_factor, factor)
 
     def update_cumulative_deployment(self, channel: ChannelType, tonnes: float):
         """Update cumulative deployment for learning curve tracking
@@ -720,7 +723,7 @@ class ProjectsBroker:
             raise ValueError("No active countries available for project allocation")
 
         # Channel-specific country preferences
-        if channel == ChannelType.CDR:
+        if channel in (ChannelType.CDR, ChannelType.AVOIDED_DEFORESTATION):
             # Prefer tropical/developing regions with land
             preferred = [c for c in active_countries
                         if self.countries[c].get('region') in
@@ -739,12 +742,14 @@ class ProjectsBroker:
 
     def initiate_projects(self, market_price_xcr: float, price_floor: float, cea: CEA, current_year: int,
                           current_co2_ppm: float, current_inflation: float,
-                          available_capital_usd: float = 0.0):
+                          available_capital_usd: float = 0.0, brake_factor: float = 1.0,
+                          residual_emissions_gt: Optional[float] = None,
+                          residual_luc_emissions_gt: Optional[float] = None):
         """Initiate new projects where economics are favorable
 
-        Project starts when: (price_floor / R_effective) >= marginal_cost
+        Project starts when: (market_price * R_effective * brake_factor) >= marginal_cost
         Project capacity scales with climate urgency (reduces as CO2 approaches 350 ppm)
-        Which means: price_floor >= marginal_cost * R_effective
+        Which means: market_price * R_effective * brake_factor >= marginal_cost
         Or equivalently: XCR revenue covers costs
 
         Uses learning-adjusted costs and policy R-multipliers.
@@ -753,8 +758,10 @@ class ProjectsBroker:
         """
         remaining_capital = max(available_capital_usd, 0.0)
 
+        benchmark_cdr_cost = self.calculate_marginal_cost(ChannelType.CDR)
+
         # Only initiate physical mitigation channels; co-benefits are handled as reward overlay
-        for channel in (ChannelType.CDR, ChannelType.CONVENTIONAL):
+        for channel in (ChannelType.CDR, ChannelType.CONVENTIONAL, ChannelType.AVOIDED_DEFORESTATION):
             if remaining_capital <= 0:
                 break
 
@@ -767,24 +774,33 @@ class ProjectsBroker:
                 continue
             remaining_capacity_gt = max_capacity_gt - planned_rate_gt
 
-            # Additional check for conventional capacity (gradual fill over time)
-            if channel == ChannelType.CONVENTIONAL:
-                if not self.is_conventional_capacity_available(current_year):
-                    continue  # Conventional capacity exhausted
+            if channel == ChannelType.CONVENTIONAL and residual_emissions_gt is not None:
+                remaining_capacity_gt = min(remaining_capacity_gt, max(residual_emissions_gt, 0.0))
+                if remaining_capacity_gt <= 0:
+                    continue
+            if channel == ChannelType.AVOIDED_DEFORESTATION and residual_luc_emissions_gt is not None:
+                remaining_capacity_gt = min(remaining_capacity_gt, max(residual_luc_emissions_gt, 0.0))
+                if remaining_capacity_gt <= 0:
+                    continue
 
             # Calculate learning-adjusted marginal cost
             marginal_cost = self.calculate_marginal_cost(channel)
 
             # Get R-values (base and policy-adjusted effective)
-            r_base, r_effective = cea.calculate_project_r_value(channel, marginal_cost, price_floor, current_year)
+            r_base, r_effective = cea.calculate_project_r_value(
+                channel, marginal_cost, benchmark_cdr_cost, current_year
+            )
 
-            # Economics check: revenue per tonne = price / R_effective
-            revenue_per_tonne = market_price_xcr / r_effective
+            # Economics check: revenue per tonne = price * R_effective * brake
+            revenue_per_tonne = market_price_xcr * r_effective * brake_factor
 
             if revenue_per_tonne >= marginal_cost:
                 # Profitable - initiate multiple projects
                 # Climate urgency factor (0-1) scales capital-limited capacity
                 urgency_factor = self._calculate_project_capacity(channel, current_co2_ppm, current_inflation)
+                capacity_factor = 1.0
+                if channel == ChannelType.CONVENTIONAL:
+                    capacity_factor = self.get_conventional_capacity_factor(current_year)
 
                 # Estimate how many projects available capital and capacity can support
                 scale_damper = self.calculate_project_scale_damper()
@@ -796,7 +812,7 @@ class ProjectsBroker:
                 max_by_capital = int(remaining_capital / max(marginal_cost * expected_seq, 1.0))
                 max_by_capacity = int((remaining_capacity_gt * 1e9) / max(min_seq, 1.0))
                 max_projects = max(min(max_by_capital, max_by_capacity), 0)
-                num_projects = int(max_projects * urgency_factor)
+                num_projects = int(max_projects * urgency_factor * capacity_factor)
 
                 # Inner loop: create multiple projects for this channel
                 for _ in range(num_projects):
@@ -807,7 +823,7 @@ class ProjectsBroker:
                     country = self._select_country(channel)
 
                     # Project parameters
-                    dev_years = np.random.randint(2, 5)  # 2-4 years development
+                    dev_years = np.random.randint(1, 3)  # 1-2 years development
 
                     # Base project scale: 10M-100M tonnes/year
                     base_annual_seq = np.random.uniform(1e7, 1e8)
@@ -898,7 +914,8 @@ class ProjectsBroker:
 
                     if np.random.random() < retirement_probability:
                         project.status = ProjectStatus.FAILED
-                        reversal_tonnes += project.total_sequestered_tonnes
+                        reversal_fraction = get_failure_reversal_fraction(project.channel)
+                        reversal_tonnes += project.total_sequestered_tonnes * reversal_fraction
                         project.total_sequestered_tonnes = 0.0
                         # Note: This is retirement, not failure, but uses same status
                         continue
@@ -1023,6 +1040,20 @@ class CapitalMarket:
         self.cumulative_capital_outflow = 0.0  # Total capital withdrawn (USD)
         self.seed_capital_usd = 2e10  # Bootstrap inflow for early-stage market formation
         self.seed_market_cap_usd = 5e10  # Seed applies while market cap is small
+        self.neutrality_start = 0.6  # Higher hurdle for new markets
+        self.neutrality_end = 0.3  # More optimistic after market matures
+        self.neutrality_ramp_years = 10  # Years to reach optimistic neutrality
+
+    def _neutrality_threshold(self, market_age_years: float) -> float:
+        """Return capital neutrality threshold based on market age."""
+        if self.neutrality_ramp_years <= 0:
+            return self.neutrality_end
+        if market_age_years <= 0:
+            return self.neutrality_start
+        if market_age_years >= self.neutrality_ramp_years:
+            return self.neutrality_end
+        progress = market_age_years / self.neutrality_ramp_years
+        return self.neutrality_start + (self.neutrality_end - self.neutrality_start) * progress
 
     def calculate_forward_guidance(self, current_co2: float, year: int,
                                    total_years: int, roadmap_gap: float) -> float:
@@ -1082,7 +1113,8 @@ class CapitalMarket:
         return hedge_demand
 
     def calculate_capital_demand(self, forward_guidance: float, inflation_hedge: float,
-                                sentiment: float, xcr_supply: float, price_floor: float) -> float:
+                                sentiment: float, xcr_supply: float, price_floor: float,
+                                market_age_years: float = 0.0) -> float:
         """Calculate private capital demand for XCR
 
         Returns: USD amount of capital inflow/outflow this period
@@ -1100,10 +1132,11 @@ class CapitalMarket:
         combined_attractiveness = forward_guidance * inflation_hedge * sentiment
 
         # Net capital flow
-        # - combined_attractiveness > 0.4 → inflow
-        # - combined_attractiveness < 0.4 → outflow
+        # - combined_attractiveness > neutrality → inflow
+        # - combined_attractiveness < neutrality → outflow
         # - Scale by market cap and turnover rate
-        net_capital_flow = market_cap * base_turnover_rate * (combined_attractiveness - 0.4) * 2
+        neutrality = self._neutrality_threshold(market_age_years)
+        net_capital_flow = market_cap * base_turnover_rate * (combined_attractiveness - neutrality) * 2
 
         # Seed capital for early market formation (pre-liquidity bootstrap)
         seed_inflow = 0.0
@@ -1116,7 +1149,8 @@ class CapitalMarket:
     def update_capital_flows(self, current_co2: float, year: int, total_years: int,
                             roadmap_gap: float, global_inflation: float,
                             inflation_target: float, sentiment: float,
-                            xcr_supply: float, price_floor: float) -> tuple[float, float, float]:
+                            xcr_supply: float, price_floor: float,
+                            market_age_years: float = 0.0) -> tuple[float, float, float]:
         """Update capital flows and return capital demand premium
 
         Returns: (net_capital_flow, capital_demand_premium, forward_guidance)
@@ -1133,7 +1167,8 @@ class CapitalMarket:
 
         # Calculate net capital flow (USD)
         net_capital_flow = self.calculate_capital_demand(
-            forward_guidance, inflation_hedge, sentiment, xcr_supply, price_floor
+            forward_guidance, inflation_hedge, sentiment, xcr_supply, price_floor,
+            market_age_years
         )
 
         # Track cumulative flows
@@ -1158,7 +1193,7 @@ class CapitalMarket:
 class Auditor:
     """Auditor (MRV) - Verification and risk management"""
 
-    def __init__(self, error_rate: float = 0.02):
+    def __init__(self, error_rate: float = 0.01):
         self.error_rate = error_rate
         self.total_xcr_burned = 0.0
 
@@ -1167,10 +1202,10 @@ class Auditor:
 
         Returns: "PASS" or "FAIL"
         """
-        if project.health < 0.9:
-            # Unhealthy project - likely to fail audit
-            if np.random.rand() > self.error_rate:
-                return "FAIL"
+        health_gap = max(0.0, 0.9 - project.health) / 0.9
+        failure_probability = min(0.3, self.error_rate + (health_gap * 0.25))
+        if np.random.rand() < failure_probability:
+            return "FAIL"
         return "PASS"
 
     def verify_and_mint_xcr(self, project: Project) -> tuple[float, float]:
@@ -1178,16 +1213,15 @@ class Auditor:
         audit_result = self.audit_project(project)
 
         if audit_result == "PASS":
-            # Mint XCR: tonnes sequestered / R
-            xcr_minted = project.annual_sequestration_tonnes / project.r_value
-            project.total_xcr_minted += xcr_minted
-            project.total_sequestered_tonnes += project.annual_sequestration_tonnes
+            # Mint XCR: tonnes sequestered * R
+            xcr_minted = project.annual_sequestration_tonnes * project.r_value
             return xcr_minted, 0.0
         else:
             # FAIL - clawback (burn previously minted XCR)
             clawback_amount = project.total_xcr_minted * 0.5  # Burn 50% of lifetime rewards
             self.total_xcr_burned += clawback_amount
-            reversal_tonnes = project.total_sequestered_tonnes
+            reversal_fraction = get_failure_reversal_fraction(project.channel)
+            reversal_tonnes = project.total_sequestered_tonnes * reversal_fraction
             project.total_sequestered_tonnes = 0.0
             project.status = ProjectStatus.FAILED
             return -clawback_amount, reversal_tonnes  # Negative = burn
@@ -1207,7 +1241,8 @@ class GCR_ABM_Simulation:
                  adoption_rate: float = 3.5, inflation_target: float = 0.02,
                  xcr_start_year: int = 0, years_to_full_capacity: int = 5,
                  cdr_learning_rate: float = 0.20, conventional_learning_rate: float = 0.12,
-                 scale_full_deployment_gt: float = 200.0,
+                 scale_full_deployment_gt: float = 45.0,
+                 cdr_capacity_gt: float = 10.0,
                  # LLM agent parameters
                  llm_enabled: bool = False,
                  llm_model: str = "llama3.2",
@@ -1227,6 +1262,7 @@ class GCR_ABM_Simulation:
             cdr_learning_rate: CDR technology learning rate
             conventional_learning_rate: Conventional tech learning rate
             scale_full_deployment_gt: Full-scale deployment threshold for scale damping (Gt)
+            cdr_capacity_gt: Annual CDR capacity cap (Gt/year)
             llm_enabled: Use LLM-powered agents (requires Ollama)
             llm_model: Ollama model name (llama3.2, mistral, etc.)
             llm_cache_mode: Cache mode (disabled, read_write, read_only, write_only)
@@ -1264,7 +1300,10 @@ class GCR_ABM_Simulation:
         self.bau_emissions_gt_per_year = 40.0  # GtCO2/year constant emission flow
         self.bau_peak_year = 6  # Years to peak (~2030 if start ~2024)
         self.bau_growth_rate_pre_peak = 0.01  # 1% annual growth until peak
-        self.bau_decline_rate_post_peak = -0.02  # 2% annual decline after peak (policy + tech)
+        self.bau_decline_start_year = 60  # Late-century population decline begins
+        self.bau_post_peak_plateau_rate = 0.0  # Flat emissions until population decline
+        self.bau_decline_rate_post_peak = -0.002  # 0.2% annual decline after population decline begins
+        self.structural_conventional_capacity_tonnes = 0.0  # Installed structural mitigation (tonnes/year)
 
         # Expanded country pool (50 countries with varied characteristics)
         # Format: gdp_tril, base_cqe (as fraction of trillion), tier, region, active, adoption_year
@@ -1419,7 +1458,8 @@ class GCR_ABM_Simulation:
         self.projects_broker.learning_rates[ChannelType.CDR] = cdr_learning_rate
         self.projects_broker.learning_rates[ChannelType.CONVENTIONAL] = conventional_learning_rate
         self.projects_broker.full_scale_deployment_gt = scale_full_deployment_gt
-        self.auditor = Auditor(error_rate=0.02)
+        self.projects_broker.max_capacity_gt_per_year[ChannelType.CDR] = cdr_capacity_gt
+        self.auditor = Auditor(error_rate=0.01)
 
     def chaos_monkey(self):
         """Inject stochastic economic shocks
@@ -1580,11 +1620,12 @@ class GCR_ABM_Simulation:
             roadmap_gap = self.co2_level - roadmap_target
 
             if system_active:
+                market_age_years = year - self.xcr_start_year
                 net_capital_flow, capital_demand_premium, forward_guidance = self.capital_market.update_capital_flows(
                     self.co2_level, year, self.years, roadmap_gap,
                     self.global_inflation, self.inflation_target,
                     self.investor_market.sentiment, self.total_xcr_supply,
-                    self.price_floor
+                    self.price_floor, market_age_years
                 )
             else:
                 net_capital_flow, capital_demand_premium, forward_guidance = (0.0, 0.0, 0.0)
@@ -1594,9 +1635,10 @@ class GCR_ABM_Simulation:
                 self.investor_market.calculate_price(capital_demand_premium)
             market_cap = self.total_xcr_supply * self.investor_market.market_price_xcr if system_active else 0.0
 
-            # 2c2. Update CQE budget (15% of cumulative private capital - Gold Pool Model)
+            # 2c2. Update CQE budget (5% of annual private capital inflow)
             if system_active:
-                self.central_bank.update_cqe_budget(self.capital_market.cumulative_capital_inflow)
+                annual_private_inflow = max(net_capital_flow, 0.0)
+                self.central_bank.update_cqe_budget(annual_private_inflow)
 
             # 3. CEA updates policy
             if system_active:
@@ -1629,6 +1671,19 @@ class GCR_ABM_Simulation:
             # Only initiate projects if capacity > 0 (system active)
             if capacity > 0 and system_active:
                 available_capital_usd = max(net_capital_flow, 0.0)
+                structural_conventional_gt = self.structural_conventional_capacity_tonnes / 1e9
+                remaining_conventional_need_gt = max(
+                    0.0, self.bau_emissions_gt_per_year - structural_conventional_gt
+                )
+                land_use_change_gtco2 = (
+                    self.land_use_change_gtc * self.carbon_cycle.params.gtco2_per_gtc
+                )
+                planned_avoided_deforestation_gt = self.projects_broker.get_planned_sequestration_rate(
+                    ChannelType.AVOIDED_DEFORESTATION
+                )
+                remaining_luc_emissions_gt = max(
+                    0.0, land_use_change_gtco2 - planned_avoided_deforestation_gt
+                )
                 self.projects_broker.initiate_projects(
                     self.investor_market.market_price_xcr,
                     self.price_floor,
@@ -1636,7 +1691,10 @@ class GCR_ABM_Simulation:
                     year,
                     self.co2_level,  # Pass current CO2 for urgency calculation
                     self.global_inflation,
-                    available_capital_usd
+                    available_capital_usd,
+                    self.cea.brake_factor,
+                    residual_emissions_gt=remaining_conventional_need_gt,
+                    residual_luc_emissions_gt=remaining_luc_emissions_gt
                 )
 
             # 5. Step all projects (development progress, stochastic decay, retirement)
@@ -1666,33 +1724,72 @@ class GCR_ABM_Simulation:
 
             reversal_tonnes_audits = 0.0
 
-            if self.enable_audits and capacity > 0:
+            avoided_deforestation_tonnes = 0.0
+            remaining_structural_tonnes = max(
+                0.0,
+                (self.bau_emissions_gt_per_year * 1e9) - self.structural_conventional_capacity_tonnes
+            )
+            land_use_change_gtco2 = self.land_use_change_gtc * self.carbon_cycle.params.gtco2_per_gtc
+            remaining_luc_tonnes = max(0.0, land_use_change_gtco2 * 1e9)
+
+            if capacity > 0:
                 for project in operational_projects:
-                    xcr_change, reversal = self.auditor.verify_and_mint_xcr(project)
+                    if self.enable_audits:
+                        xcr_change_raw, reversal = self.auditor.verify_and_mint_xcr(project)
+                        audit_passed = xcr_change_raw > 0
+                    else:
+                        audit_passed = True
+                        xcr_change_raw = 0.0
+                        reversal = 0.0
+
                     # Apply capacity multiplier and brake factor to XCR minting
                     # Capacity: institutional learning (0-100% over 5 years)
                     # Brake: CEA stability control (reduces when ratio > 10:1)
                     brake_factor = self.cea.brake_factor
-                    xcr_change_adjusted = xcr_change * capacity * brake_factor
                     reversal_tonnes_audits += reversal
 
-                    if xcr_change > 0:
+                    credited_tonnes = 0.0
+                    if audit_passed:
+                        if project.channel == ChannelType.CDR:
+                            credited_tonnes = project.annual_sequestration_tonnes
+                        elif project.channel == ChannelType.CONVENTIONAL:
+                            remaining_project_tonnes = max(
+                                0.0,
+                                project.annual_sequestration_tonnes - project.structural_credited_tonnes
+                            )
+                            credit = min(remaining_project_tonnes, remaining_structural_tonnes)
+                            credited_tonnes = credit
+                            if credit > 0:
+                                project.structural_credited_tonnes += credit
+                                self.structural_conventional_capacity_tonnes += credit
+                                remaining_structural_tonnes -= credit
+                        elif project.channel == ChannelType.AVOIDED_DEFORESTATION:
+                            credit = min(project.annual_sequestration_tonnes, remaining_luc_tonnes)
+                            credited_tonnes = credit
+                            remaining_luc_tonnes -= credit
+                            avoided_deforestation_tonnes += credit
+
+                        xcr_change_raw = credited_tonnes * project.r_value
+
+                    xcr_change_adjusted = xcr_change_raw * capacity * brake_factor
+
+                    if audit_passed and xcr_change_raw > 0:
                         # Successful verification - MINT XCR (hold back a co-benefit pool slice)
                         pool_contribution = xcr_change_adjusted * self.projects_broker.cobenefit_pool_fraction
                         project_mint = xcr_change_adjusted - pool_contribution
                         xcr_minted_this_year += project_mint
-                        total_sequestration += project.annual_sequestration_tonnes
+                        total_sequestration += credited_tonnes
+                        project.total_sequestered_tonnes += credited_tonnes
                         if project.channel == ChannelType.CDR:
-                            cdr_sequestration += project.annual_sequestration_tonnes
-                            cdr_sequestration_tonnes += project.annual_sequestration_tonnes
+                            cdr_sequestration += credited_tonnes
+                            cdr_sequestration_tonnes += credited_tonnes
                         elif project.channel == ChannelType.CONVENTIONAL:
-                            conventional_mitigation += project.annual_sequestration_tonnes
-                            conv_sequestration_tonnes += project.annual_sequestration_tonnes
-
+                            conventional_mitigation += credited_tonnes
+                            conv_sequestration_tonnes += credited_tonnes
                         # Update cumulative deployment for learning curves
                         self.projects_broker.update_cumulative_deployment(
                             project.channel,
-                            project.annual_sequestration_tonnes
+                            credited_tonnes
                         )
                         project.total_xcr_minted += project_mint
                         cobenefit_pool += pool_contribution
@@ -1702,7 +1799,7 @@ class GCR_ABM_Simulation:
                         # Track XCR earned by country (use adjusted amount)
                         if project.country in self.countries:
                             self.countries[project.country]["xcr_earned"] += project_mint
-                    else:
+                    elif not audit_passed:
                         # Failed audit - BURN XCR (negative value)
                         xcr_burned_this_year += abs(xcr_change_adjusted)  # Track as positive
 
@@ -1748,8 +1845,7 @@ class GCR_ABM_Simulation:
                     self.global_inflation -= over_shoot * 0.6  # Pull 60% back toward target
                     self.global_inflation = min(self.global_inflation, self.inflation_target * 1.5)
 
-            # Enforce absolute price floor
-            self.investor_market.market_price_xcr = max(self.investor_market.market_price_xcr, self.price_floor)
+            # No hard clamp: floor can slip if CQE is unwilling or budget-limited
 
             # 8. Update climate state using carbon cycle (emissions, sinks, feedbacks)
             ppm_per_gtc = self.carbon_cycle.params.ppm_per_gtc
@@ -1757,9 +1853,12 @@ class GCR_ABM_Simulation:
             bau_emissions_gtc = self.bau_emissions_gt_per_year * gtc_per_gtco2
             bau_increase_ppm = bau_emissions_gtc * ppm_per_gtc
 
-            # Conventional mitigation reduces emissions flow (cannot go below zero)
-            conventional_gtc = conventional_mitigation / 1e9 * gtc_per_gtco2
-            actual_emissions_gtc = max(0.0, bau_emissions_gtc - conventional_gtc)
+            # Structural decarbonization reduces human emissions baseline
+            structural_conventional_gt = self.structural_conventional_capacity_tonnes / 1e9
+            human_emissions_gtco2 = max(
+                0.0, self.bau_emissions_gt_per_year - structural_conventional_gt
+            )
+            actual_emissions_gtc = human_emissions_gtco2 * gtc_per_gtco2
 
             # CDR + co-benefits remove CO2 from stock
             removal_gtc = cdr_sequestration / 1e9 * gtc_per_gtco2
@@ -1768,17 +1867,23 @@ class GCR_ABM_Simulation:
             reversal_gtc = reversal_tonnes_total / 1e9 * gtc_per_gtco2
 
             net_emissions_gtc = actual_emissions_gtc + reversal_gtc
+            avoided_deforestation_gtc = avoided_deforestation_tonnes / 1e9 * gtc_per_gtco2
+            land_use_change_gtc_effective = max(
+                0.0, self.land_use_change_gtc - avoided_deforestation_gtc
+            )
 
             climate_state = self.carbon_cycle.step(
                 emissions_gtc=net_emissions_gtc,
                 sequestration_gtc=removal_gtc,
-                land_use_change_gtc=self.land_use_change_gtc
+                land_use_change_gtc=land_use_change_gtc_effective
             )
             self.co2_level = climate_state["CO2_ppm"]
 
-            # BAU emissions peak then decline (reflects expected global peak before 2030)
+            # BAU emissions peak then plateau, then decline late-century (population-driven)
             if year < self.bau_peak_year:
                 bau_growth_rate = self.bau_growth_rate_pre_peak
+            elif year < self.bau_decline_start_year:
+                bau_growth_rate = self.bau_post_peak_plateau_rate
             else:
                 bau_growth_rate = self.bau_decline_rate_post_peak
 
@@ -1808,16 +1913,23 @@ class GCR_ABM_Simulation:
             conv_policy = self.cea.calculate_policy_r_multiplier(ChannelType.CONVENTIONAL, year)
 
             # Effective R-values (base × policy)
-            cdr_r_base, cdr_r_eff = self.cea.calculate_project_r_value(ChannelType.CDR, cdr_cost, self.price_floor, year)
-            conv_r_base, conv_r_eff = self.cea.calculate_project_r_value(ChannelType.CONVENTIONAL, conv_cost, self.price_floor, year)
+            benchmark_cdr_cost = cdr_cost
+            cdr_r_base, cdr_r_eff = self.cea.calculate_project_r_value(
+                ChannelType.CDR, cdr_cost, benchmark_cdr_cost, year
+            )
+            conv_r_base, conv_r_eff = self.cea.calculate_project_r_value(
+                ChannelType.CONVENTIONAL, conv_cost, benchmark_cdr_cost, year
+            )
 
-            # Profitability signals (market_price / R_eff - cost)
-            cdr_profit = (self.investor_market.market_price_xcr / cdr_r_eff) - cdr_cost if cdr_r_eff > 0 else 0
-            conv_profit = (self.investor_market.market_price_xcr / conv_r_eff) - conv_cost if conv_r_eff > 0 else 0
+            # Profitability signals (market_price * R_eff * brake - cost)
+            brake_factor = self.cea.brake_factor
+            cdr_profit = (self.investor_market.market_price_xcr * cdr_r_eff * brake_factor) - cdr_cost if cdr_r_eff > 0 else 0
+            conv_profit = (self.investor_market.market_price_xcr * conv_r_eff * brake_factor) - conv_cost if conv_r_eff > 0 else 0
 
             # Conventional capacity utilization
             conv_capacity_util = self.projects_broker.get_conventional_capacity_utilization(year)
             conv_capacity_available = self.projects_broker.is_conventional_capacity_available(year)
+            conv_capacity_factor = self.projects_broker.get_conventional_capacity_factor(year)
 
             # Record results with expanded transparency columns
             results.append({
@@ -1842,7 +1954,10 @@ class GCR_ABM_Simulation:
                 "Sequestration_Tonnes": total_sequestration,
                 "CDR_Sequestration_Tonnes": cdr_sequestration_tonnes,
                 "Conventional_Mitigation_Tonnes": conv_sequestration_tonnes,
+                "Avoided_Deforestation_Tonnes": avoided_deforestation_tonnes,
                 "Reversal_Tonnes": reversal_tonnes_total,
+                "Human_Emissions_GtCO2": human_emissions_gtco2,
+                "Conventional_Installed_GtCO2": structural_conventional_gt,
                 "CEA_Warning": self.cea.warning_8to1_active,
                 "CQE_Spent": self.central_bank.total_cqe_spent,
                 "XCR_Purchased": xcr_purchased,
@@ -1889,6 +2004,7 @@ class GCR_ABM_Simulation:
                 # NEW: Conventional capacity constraints
                 "Conventional_Capacity_Utilization": conv_capacity_util,
                 "Conventional_Capacity_Available": conv_capacity_available,
+                "Conventional_Capacity_Factor": conv_capacity_factor,
 
                 # NEW: Capital market flows (private investor demand)
                 "Net_Capital_Flow": net_capital_flow,

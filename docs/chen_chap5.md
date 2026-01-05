@@ -625,6 +625,6 @@ Adaptive, contract-based carbon reward policy delivers:
 | **Durability Standard** | 100 years minimum |
 | **Climate Finance Gap** | ~$4-5 trillion/year until 2050 |
 | **CDR Target Range** | 100-1,000 GtCO₂e (2020-2100) for +1.5°C |
-| **Reward Channels** | 3 (CDR, Conventional, Co-benefits) |
+| **Reward Channels** | 4 (CDR, Conventional, Avoided Deforestation, Co-benefits) |
 | **ISO Code** | XCR (proposed) |
 | **Policy Class** | Class 4 (Mitigate-and-Trade) |

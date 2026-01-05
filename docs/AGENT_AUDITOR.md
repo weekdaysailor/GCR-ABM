@@ -1,11 +1,12 @@
-# Agent: Auditor (MRV)
-**Role:** Verification and Risk Management
+# Agent: Auditor
+**Role:** Verification and durability enforcement
 
 ## Objective
-To ensure the integrity of the 100-year durability requirement for carbon sequestration.
+Verify sequestration and enforce durability requirements before XCR is minted.
 
-## Key Logic
-1. **Stochastic Decay:** Models "natural" project failures (fires, leaks, tech failure) as random events.
-2. **Detection:** Auditors check project health with a 2% Error Rate (Class 3 Operational Risk).
-3. **Clawback Execution:** If a failure is detected, the auditor triggers a **Clawback**, revoking a portion of previously awarded XCR from the developer.
-4. **System Feedback:** Frequent clawbacks lower Investor Sentiment and force the CEA to lower the R-multiplier for high-risk project types.
+## Key Logic (Code-Accurate)
+1. **Verification:** Audits use a 1% error rate and project health to determine pass/fail.
+2. **Minting:** On pass, XCR is minted for that year’s verified sequestration.
+3. **Clawback:** On fail, 50% of lifetime XCR is burned and the project is marked failed.
+4. **Reversals:** Failed projects return previously sequestered tonnes to the atmosphere.
+5. **No Direct Policy Feedback:** Sentiment and R‑multipliers are not adjusted directly by the auditor.

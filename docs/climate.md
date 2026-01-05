@@ -17,7 +17,7 @@ This document specifies a redesigned climate model for the GCR-ABM simulation th
 ```
 Current Carbon Flow (gcr_model.py lines 1525-1550):
 
-    BAU Emissions (40 GtCO2/yr)
+    BAU Emissions (40 GtCO2/yr initial, slow decline)
            │
            ▼
     ┌─────────────────┐
@@ -779,7 +779,7 @@ Remaining gaps (out of scope):
 Per time step (1 year):
 
 1. Emissions flux:
-   E = E_bau - E_conventional_mitigation
+   E_human = max(0, E_bau - E_conventional_installed)
 
 2. Ocean uptake:
    F_ocean = k_o × E × β(T) × γ(C_atm)

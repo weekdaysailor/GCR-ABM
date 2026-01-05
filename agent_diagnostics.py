@@ -44,7 +44,7 @@ def run_agent_diagnostics(years=20):
     print(f"\n3. ProjectsBroker:")
     print(f"   - Active countries: {len(sim.projects_broker.countries)}")
     print(f"   - CDR base cost: ${sim.projects_broker.base_costs[ChannelType.CDR]}/tonne")
-    print(f"   - Decision rule: Initiate projects when (market_price / R_eff) >= cost")
+    print(f"   - Decision rule: Initiate projects when (market_price * R_eff * brake_factor) >= cost")
     print(f"   - Learning rates: CDR={sim.projects_broker.learning_rates[ChannelType.CDR]*100}%, Conv={sim.projects_broker.learning_rates[ChannelType.CONVENTIONAL]*100}%")
 
     print(f"\n4. InvestorMarket:")
@@ -117,6 +117,7 @@ def run_agent_diagnostics(years=20):
         # 2b. Capital market update (drives available capital + price premium)
         roadmap_target = sim.cea.calculate_roadmap_target(year, sim.years)
         roadmap_gap = sim.co2_level - roadmap_target
+        market_age_years = max(0, year - sim.xcr_start_year)
         net_capital_flow, capital_demand_premium, _ = sim.capital_market.update_capital_flows(
             sim.co2_level,
             year,
@@ -126,11 +127,12 @@ def run_agent_diagnostics(years=20):
             sim.inflation_target,
             sim.investor_market.sentiment,
             sim.total_xcr_supply,
-            sim.price_floor
+            sim.price_floor,
+            market_age_years
         )
         sim.investor_market.calculate_price(capital_demand_premium)
-        market_cap = sim.total_xcr_supply * sim.investor_market.market_price_xcr
-        sim.central_bank.update_cqe_budget(market_cap)
+        annual_inflow = max(net_capital_flow, 0.0)
+        sim.central_bank.update_cqe_budget(annual_inflow)
         if year in track_years:
             sentiment_change = sim.investor_market.sentiment - old_sentiment
             decision = "DECAY" if sentiment_change < 0 else "RECOVERY" if sentiment_change > 0 else "STABLE"
@@ -180,6 +182,19 @@ def run_agent_diagnostics(years=20):
         if capacity > 0:
             projects_before = len(sim.projects_broker.projects)
             available_capital_usd = max(net_capital_flow, 0.0)
+            structural_conventional_gt = sim.structural_conventional_capacity_tonnes / 1e9
+            remaining_conventional_need_gt = max(
+                0.0, sim.bau_emissions_gt_per_year - structural_conventional_gt
+            )
+            land_use_change_gtco2 = (
+                sim.land_use_change_gtc * sim.carbon_cycle.params.gtco2_per_gtc
+            )
+            planned_avoided_deforestation_gt = sim.projects_broker.get_planned_sequestration_rate(
+                ChannelType.AVOIDED_DEFORESTATION
+            )
+            remaining_luc_emissions_gt = max(
+                0.0, land_use_change_gtco2 - planned_avoided_deforestation_gt
+            )
             sim.projects_broker.initiate_projects(
                 sim.investor_market.market_price_xcr,
                 sim.price_floor,
@@ -187,7 +202,10 @@ def run_agent_diagnostics(years=20):
                 year,
                 sim.co2_level,
                 sim.global_inflation,
-                available_capital_usd
+                available_capital_usd,
+                sim.cea.brake_factor,
+                residual_emissions_gt=remaining_conventional_need_gt,
+                residual_luc_emissions_gt=remaining_luc_emissions_gt
             )
             projects_initiated = len(sim.projects_broker.projects) - projects_before
 
@@ -195,10 +213,13 @@ def run_agent_diagnostics(years=20):
                 print(f"\n  → ProjectsBroker DECISIONS:")
 
                 # Check each channel's profitability
+                benchmark_cdr_cost = sim.projects_broker.calculate_marginal_cost(ChannelType.CDR)
                 for channel in ChannelType:
                     cost = sim.projects_broker.calculate_marginal_cost(channel)
-                    r_base, r_eff = sim.cea.calculate_project_r_value(channel, cost, sim.price_floor, year)
-                    revenue = sim.investor_market.market_price_xcr / r_eff
+                    r_base, r_eff = sim.cea.calculate_project_r_value(
+                        channel, cost, benchmark_cdr_cost, year
+                    )
+                    revenue = sim.investor_market.market_price_xcr * r_eff * sim.cea.brake_factor
                     profit = revenue - cost
 
                     # Check capacity for conventional

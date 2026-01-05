@@ -193,6 +193,8 @@ class CarbonCycle:
         channel = channel.lower()
         if channel == "cobenefits":
             return 1.5
+        if channel == "avoided_deforestation":
+            return 1.4
         if channel == "conventional":
             return 1.2
         return 1.0  # CDR default
