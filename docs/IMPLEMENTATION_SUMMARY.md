@@ -6,6 +6,8 @@
 
 This document summarizes the major changes implemented to make the GCR-ABM reach gigatonne-scale CO2 sequestration while making **inflation the PRIMARY constraint** on XCR issuance.
 
+**Note**: This is a historical change log. For current defaults and code-accurate behavior, see `assumptions.md`, `CLAUDE.md`, and `gcr_model.py`. Later updates removed per‑country project caps and made project counts capital‑limited with seed capital for early bootstrapping.
+
 ## Problem Statement
 
 **Initial Issue**: System was producing only 0.050 Gt/year sequestration at year 50, far below the required 22 Gt/year to reach 350 ppm by 2050 (439x too low).
@@ -316,15 +318,15 @@ Comprehensive guide explaining:
 - Linked to detailed documentation
 
 **CentralBankAlliance Section** (lines 51-58):
-- Updated CQE budget values (USA: $50B instead of $500B)
-- Added total budget calculations
+- Updated CQE budget model to flow-based sizing (5% of annual private inflow)
+- Added GDP cap (0.5% of active GDP)
 - Emphasized realistic levels
 
 **Key System Parameters Section** (lines 315-322):
 - Updated inflation target documentation
 - Added inflation-adjusted brake threshold examples
 - Documented impact percentages
-- Updated CQE budget values
+- Updated CQE budget model parameters
 
 **Running the Simulation Section** (line 253):
 - Added `inflation_target` parameter to example
@@ -343,7 +345,7 @@ Comprehensive guide explaining:
    - Lines 67-72: Added `inflation_target` to CEA constructor
    - Lines 150-217: Inflation-adjusted brake calculation
    - Line 226: Updated brake factor call
-   - Lines 846-904: Reduced CQE budgets by 90%
+   - Lines 846-904: Updated CQE budget model (flow-based sizing)
    - Line 950: Pass `inflation_target` to CEA
 
 ### Testing
@@ -472,7 +474,7 @@ In sidebar:
 - Use cubic instead of quadratic interpolation
 
 **Climate goals not met:**
-- Increase project initiation rate: 2 per country → 3 per country
+- Increase project initiation rate (historical; per‑country caps removed in later update)
 - Increase project scale: 1e7-1e8 → 2e7-2e8
 - Decrease adoption time: 3.5 countries/year → 5 countries/year
 
@@ -509,6 +511,6 @@ The GCR-ABM now successfully:
 2. **Makes inflation the PRIMARY constraint** on XCR issuance (86% impact)
 3. **Self-regulates at any scale** through inflation-adjusted brake
 4. **Provides policy flexibility** via configurable inflation target
-5. **Maintains realistic economics** with $196B/year CQE budgets
+5. **Maintains realistic economics** with flow-based CQE budgets (5% of annual inflows, GDP-capped)
 
 The system is now ready for exploration of different economic scenarios and climate policy regimes.

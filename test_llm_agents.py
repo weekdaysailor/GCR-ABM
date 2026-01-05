@@ -107,7 +107,8 @@ def test_capital_market_llm_fallback():
         inflation_target=0.02,
         sentiment=0.8,
         xcr_supply=1e8,
-        price_floor=100.0
+        price_floor=100.0,
+        market_age_years=5
     )
 
     # Should return reasonable values
@@ -163,7 +164,7 @@ def test_central_bank_llm_fallback():
 
     assert not cb.llm_enabled
 
-    # Set budget
+    # Set budget (annual private inflow)
     cb.update_cqe_budget(1e10)
 
     # Test floor defense

@@ -243,7 +243,8 @@ Respond with JSON only:
                             sentiment: float,
                             xcr_supply: float,
                             price_floor: float,
-                            market_price: float = None) -> tuple:
+                            market_price: float = None,
+                            market_age_years: float = 0.0) -> tuple:
         """Update capital flows using LLM or rule-based fallback
 
         Returns: (net_capital_flow, capital_demand_premium, forward_guidance)
@@ -306,12 +307,12 @@ Respond with JSON only:
         return self._rule_based_flows(
             current_co2, year, total_years, roadmap_gap,
             global_inflation, inflation_target, sentiment,
-            xcr_supply, price_floor
+            xcr_supply, price_floor, market_age_years
         )
 
     def _rule_based_flows(self, current_co2, year, total_years, roadmap_gap,
                          global_inflation, inflation_target, sentiment,
-                         xcr_supply, price_floor) -> tuple:
+                         xcr_supply, price_floor, market_age_years: float = 0.0) -> tuple:
         """Original rule-based capital flow logic as fallback"""
         # Forward guidance
         initial_co2 = 420.0
@@ -335,7 +336,18 @@ Respond with JSON only:
         # Capital demand
         market_cap = max(xcr_supply * price_floor, 1e9)
         combined_attractiveness = forward_guidance * inflation_hedge * sentiment
-        net_capital_flow = market_cap * 0.10 * 2 * (combined_attractiveness - 0.4)
+        neutrality_start = 0.6
+        neutrality_end = 0.3
+        neutrality_ramp_years = 10
+        if market_age_years <= 0:
+            neutrality = neutrality_start
+        elif market_age_years >= neutrality_ramp_years:
+            neutrality = neutrality_end
+        else:
+            progress = market_age_years / neutrality_ramp_years
+            neutrality = neutrality_start + (neutrality_end - neutrality_start) * progress
+
+        net_capital_flow = market_cap * 0.10 * 2 * (combined_attractiveness - neutrality)
 
         # Track
         if net_capital_flow > 0:
@@ -515,17 +527,17 @@ Respond with JSON only:
         return new_floor, revision_occurred
 
     def calculate_project_r_value(self, channel, marginal_cost: float,
-                                  price_floor: float, current_year: int = 0) -> tuple:
+                                  benchmark_cdr_cost: float, current_year: int = 0) -> tuple:
         """Calculate R value for project cost-effectiveness"""
         from gcr_model import ChannelType
 
         if channel == ChannelType.CDR:
             r_base = 1.0
         elif channel == ChannelType.CONVENTIONAL:
-            r_base = marginal_cost / price_floor if price_floor > 0 else 1.0
+            r_base = marginal_cost / benchmark_cdr_cost if benchmark_cdr_cost > 0 else 1.0
             r_base = max(0.1, r_base)
         else:
-            r_base = (marginal_cost * 0.8) / price_floor if price_floor > 0 else 1.0
+            r_base = (marginal_cost * 0.8) / benchmark_cdr_cost if benchmark_cdr_cost > 0 else 1.0
             r_base = max(0.1, r_base)
 
         policy_mult = self.calculate_policy_r_multiplier(channel, current_year)
@@ -607,15 +619,15 @@ Respond with JSON only:
         self.countries = countries or {}
         self.price_floor_rcc = price_floor
         self.total_cqe_budget = 0.0
-        self.cqe_ratio = 0.20
-        self.gdp_cap_ratio = 0.02
+        self.cqe_ratio = 0.05
+        self.gdp_cap_ratio = 0.005
         self.total_cqe_spent = 0.0
         self.annual_cqe_spent = 0.0
         self.current_budget_year = 0
 
-    def update_cqe_budget(self, market_capitalization: float):
+    def update_cqe_budget(self, annual_private_capital_inflow: float):
         """Recalculate CQE budget"""
-        market_cap_budget = market_capitalization * self.cqe_ratio
+        market_cap_budget = annual_private_capital_inflow * self.cqe_ratio
         active_gdp_tril = sum(c.get("gdp_tril", 0) for c in self.countries.values())
         gdp_cap_budget = active_gdp_tril * 1e12 * self.gdp_cap_ratio
         self.total_cqe_budget = min(market_cap_budget, gdp_cap_budget)
@@ -639,6 +651,9 @@ Respond with JSON only:
 
         # Check if budget exhausted
         if self.annual_cqe_spent >= self.total_cqe_budget:
+            return 0.0, 0.0, 0.0
+
+        if inflation_target <= 0:
             return 0.0, 0.0, 0.0
 
         # Calculate gap
@@ -811,7 +826,8 @@ def test_llm_agents():
         inflation_target=0.02,
         sentiment=sentiment,
         xcr_supply=1e8,
-        price_floor=100.0
+        price_floor=100.0,
+        market_age_years=5
     )
     print(f"CapitalMarket flow: ${flow/1e9:.2f}B, premium: ${premium:.2f}")
 

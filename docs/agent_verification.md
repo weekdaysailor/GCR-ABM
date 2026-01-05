@@ -120,7 +120,7 @@ if market_price_xcr < self.price_floor_rcc:
 
 - **Countries**: Different GDP, CQE budgets, adoption timing, regions
 - **Projects**: Different costs, R-values, sequestration amounts, countries, development times
-- **Channels**: Compete with different learning rates, policy multipliers, capacity limits
+- **Channels**: Compete with different learning rates and capacity limits (policy multipliers fixed at 1.0)
 - **Stochastic variation**: Inflation shocks, project failures, audit outcomes
 
 **Verification**: Check DataFrame - every project has unique `id`, `country`, `marginal_cost`, `r_value`.
@@ -133,11 +133,11 @@ if market_price_xcr < self.price_floor_rcc:
 - Market price emerges from `sentiment + floor` (not a fixed schedule)
 - Project timing emerges from `cost/price` dynamics (not predetermined years)
 - Inflation trajectory emerges from CQE interventions + chaos monkey (not scripted)
-- Technology transition emerges from learning + policy + capacity (not a switch at year 50)
+- Technology transition emerges from learning + capacity (not a switch at year 50)
 
 **Predetermined (For Comparison):**
 - Target CO2 (350 ppm) is a fixed parameter
-- Policy multiplier transition midpoint (year 50) is a fixed parameter
+- Policy multipliers are fixed at 1.0 (no time-shifted penalties)
 - Learning rates (CDR=20%) are fixed parameters
 
 **The difference**: Parameters are fixed, but **when and how** they affect outcomes depends on agent decisions.
@@ -166,7 +166,7 @@ print(f"Scenario 1: {df1.iloc[10]['Projects_Total']} projects by year 10")
 print(f"Scenario 2: {df2.iloc[10]['Projects_Total']} projects by year 10")
 ```
 
-**Result**: Different numbers because ProjectsBroker makes profitability decisions each year based on `(market_price / R_eff) >= cost`.
+**Result**: Different numbers because ProjectsBroker makes profitability decisions each year based on `(market_price * R_eff * brake_factor) >= cost`.
 
 ### Q: "How do I know sentiment isn't just a random walk?"
 
@@ -185,8 +185,7 @@ print(f"Scenario 2: {df2.iloc[10]['Projects_Total']} projects by year 10")
 **A**: No. Three independent mechanisms create the transition:
 
 1. **Learning curves** reduce CDR costs as deployment grows (dynamic)
-2. **Policy multipliers** shift gradually 2045-2055 (sigmoid, not step function)
-3. **Conventional capacity** reaches 80% around year 60 (linear fill)
+2. **Conventional capacity** tapers toward an 80% hard‑to‑abate frontier by ~year 60 using a sigmoid curve, then floors at a residual tail
 
 **Combined effect**: CDR becomes competitive gradually based on actual deployment, not a switch.
 

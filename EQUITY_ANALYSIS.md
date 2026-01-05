@@ -10,20 +10,20 @@ The GCR system has **built-in wealth transfer mechanisms** that favor the Global
 
 **How it works:**
 - **1 XCR = 1/R tonnes CO₂e** with 100+ years durability
-- Lower R = MORE XCR per tonne sequestered
+- Higher R = MORE XCR per tonne sequestered (lower tonnes per XCR)
 
 **Regional Distribution:**
 
 **Global South (Non-OECD):**
 - **CDR projects** (afforestation, biochar, soil carbon): **R = 1.0**
-- **Co-benefits** (ecosystem restoration, agro-ecology): **R = 0.8 × (marginal_cost / price_floor)**
+- **Co-benefits** (ecosystem restoration, agro-ecology): **R = 0.8 × (marginal_cost / marginal_cdr_cost)**
 - Lower marginal costs (~$70-100/tonne)
-- **Result: HIGH XCR rewards per tonne**
+- **Result: LOWER XCR rewards per tonne, higher tonnes per XCR**
 
 **Global North (OECD):**
-- **Conventional mitigation** (renewables, efficiency, industrial): **R = marginal_cost / price_floor**
+- **Conventional mitigation** (renewables, efficiency, industrial): **R = marginal_cost / marginal_cdr_cost**
 - Higher marginal costs ($150+/tonne for many technologies)
-- **Result: LOWER XCR rewards per tonne**
+- **Result: HIGHER XCR rewards per tonne, fewer tonnes per XCR**
 
 ### 2. CQE Contribution Differential
 
