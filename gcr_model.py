@@ -732,33 +732,30 @@ class ProjectsBroker:
         - Higher economic risk (uncertain credit duration)
         - Less time to amortize capital costs
 
-        Ratio > 5.0: multiplier = 1.0 (distant, no concern)
-        Ratio 4.0: multiplier = 1.2x (early nervousness)
-        Ratio 3.0: multiplier = 1.7x (moderate concern)
-        Ratio 2.0: multiplier = 3.2x (high concern)
-        Ratio 1.5: multiplier = 5.6x (very high risk)
-        Ratio 1.2: multiplier = 8.1x (severe risk)
-        Ratio 1.0: multiplier = 10.0x (unprofitable)
+        Much steeper penalty curve to stop new projects well before net-zero:
+        Ratio > 6.0: multiplier = 1.0 (distant, no concern)
+        Ratio 5.0: multiplier = 2.5x (early concern)
+        Ratio 4.0: multiplier = 6.2x (serious concern)
+        Ratio 3.0: multiplier = 15.6x (very expensive)
+        Ratio 2.0: multiplier = 39x (prohibitive)
+        Ratio 1.0: multiplier = 100x (impossible)
         """
         ratio = self.current_emissions_to_sinks_ratio
 
-        if ratio >= 5.0:
+        if ratio >= 6.0:
             return 1.0
         elif ratio <= 1.0:
-            return 15.0  # Increased from 10x to 15x max
+            return 100.0  # Massive penalty at net-zero
 
-        # Steeper exponential rise from 1.0x at ratio=5.0 to 15x at ratio=1.0
-        # Formula: multiplier = 15^((5 - ratio) / 4)
-        # At ratio 5.0: 15^0 = 1.0
-        # At ratio 4.0: 15^0.25 = 1.97
-        # At ratio 3.5: 15^0.375 = 2.77
-        # At ratio 3.0: 15^0.5 = 3.87
-        # At ratio 2.5: 15^0.625 = 5.43
-        # At ratio 2.0: 15^0.75 = 7.62
-        # At ratio 1.5: 15^0.875 = 10.69
-        # At ratio 1.0: 15^1.0 = 15.0
-        exponent = (5.0 - ratio) / 4.0
-        multiplier = 15.0 ** exponent
+        # Very steep exponential: multiplier = 100^((6 - ratio) / 5)
+        # At ratio 6.0: 100^0 = 1.0
+        # At ratio 5.0: 100^0.2 = 2.51
+        # At ratio 4.0: 100^0.4 = 6.31
+        # At ratio 3.0: 100^0.6 = 15.85
+        # At ratio 2.0: 100^0.8 = 39.81
+        # At ratio 1.0: 100^1.0 = 100.0
+        exponent = (6.0 - ratio) / 5.0
+        multiplier = 100.0 ** exponent
 
         return multiplier
 
@@ -1938,9 +1935,10 @@ class GCR_ABM_Simulation:
                 emissions_to_sinks_ratio = effective_emissions_gt / total_sinks_gt
 
                 # Check if net-zero achieved for the first time (permanent CM credit termination)
-                if emissions_to_sinks_ratio <= 1.0 and not self.net_zero_ever_reached:
+                # Use threshold of 1.5 to catch "approaching net-zero" (CM job mostly done)
+                if emissions_to_sinks_ratio <= 1.5 and not self.net_zero_ever_reached:
                     self.net_zero_ever_reached = True
-                    print(f"[Year {year}] NET-ZERO ACHIEVED: Conventional mitigation credits permanently terminated (E:S ratio = {emissions_to_sinks_ratio:.3f})")
+                    print(f"[Year {year}] NET-ZERO APPROACHING: Conventional mitigation credits permanently terminated (E:S ratio = {emissions_to_sinks_ratio:.3f})")
 
                 self.projects_broker.initiate_projects(
                     self.investor_market.market_price_xcr,

@@ -56,7 +56,7 @@ The simulation implements a true multi-agent system with five distinct agent cla
 - Marginal costs increase with project count (resource depletion curve)
 - **Conventional cost penalties**:
   - Budget depletion: 1x → 8x as cumulative deployment reaches 1000 Gt (earlier onset at 60% utilization)
-  - Net-zero proximity: 1x → 10x as E:S ratio drops from 2.0 → 1.0 (exponential penalty for shorter credit periods)
+  - Net-zero proximity: 1x → 100x as E:S ratio drops from 6.0 → 1.0 (very steep exponential for shorter credit periods)
 - Capacity limits: Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr, CDR 20 Gt/yr
 - **Net-Zero Transition**: CM credits terminate **permanently** when E:S ratio first reaches ≤ 1.0; AvDef continues
 
@@ -186,13 +186,13 @@ Note: Avoided deforestation prevents emissions (subtracted from Human_Emissions)
 CM projects face economic pressure as net-zero approaches because:
 - **Truncated crediting period**: A CM project with 25yr lifespan starting at year 25 (operational ~year 27) would normally earn XCR for 25 years, but if net-zero hits at year 30, it only earns for ~3 years
 - **Uncertain ROI**: Investors can't predict exactly when net-zero will hit, making late-stage CM projects risky
-- **Cost multiplier** (exponential, starts at E:S ratio 5.0):
-  - E:S ratio 5.0+: 1.0x (no penalty)
-  - E:S ratio 4.0: 2.0x cost (early nervousness)
-  - E:S ratio 3.0: 3.9x cost (moderate concern)
-  - E:S ratio 2.0: 7.6x cost (high concern)
-  - E:S ratio 1.5: 10.7x cost (very high risk)
-  - E:S ratio 1.0: 15x cost (unprofitable)
+- **Cost multiplier** (very steep exponential, starts at E:S ratio 6.0):
+  - E:S ratio 6.0+: 1.0x (no penalty)
+  - E:S ratio 5.0: 2.5x cost (early concern)
+  - E:S ratio 4.0: 6.3x cost (serious concern)
+  - E:S ratio 3.0: 15.9x cost (very expensive, new projects stop here)
+  - E:S ratio 2.0: 39.8x cost (prohibitive)
+  - E:S ratio 1.0: 100x cost (impossible)
 
 This naturally shifts capital from CM → CDR as net-zero approaches.
 
