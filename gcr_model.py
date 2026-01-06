@@ -1544,7 +1544,7 @@ class GCR_ABM_Simulation:
         self.global_inflation = 0.0  # Start at baseline; target guides corrections
         self.total_xcr_supply = 0.0
         self.total_gov_debt = 0.0  # Tracks spending in "GOVT" mode
-        self.gov_peak_inflation = 0.0  # Tracks max inflation seen in GOVT mode
+        self.prev_global_inflation = 0.0  # Tracks inflation from previous year
         self.gov_brake_active_years = 0  # Number of consecutive years brake has been on
         self.net_zero_ever_reached = False  # Track if net-zero achieved (permanent CM credit stop)
         self.carbon_cycle = CarbonCycle(initial_co2_ppm=self.co2_level)
@@ -1839,20 +1839,26 @@ class GCR_ABM_Simulation:
             # Government Inflation Brake logic (update peak and calculate factor)
             gov_inflation_brake_factor = 1.0
             if gov_funding_active:
-                # Check against PREVIOUS year's peak for sensitivity
-                if self.gov_peak_inflation > self.inflation_target and self.global_inflation >= 0.9 * self.gov_peak_inflation:
+                target = self.inflation_target
+                # 90% threshold (e.g., 1.8% for 2% target)
+                if self.global_inflation >= 0.9 * target:
                     self.gov_brake_active_years += 1
-                    # 90% peak: slow by 10% (0.9); stay high: slash by 20% (0.8)
-                    gov_inflation_brake_factor = 0.9 if self.gov_brake_active_years == 1 else 0.8
+                    
+                    if self.global_inflation >= 1.5 * target:
+                        gov_inflation_brake_factor = 0.05  # EMERGENCY STOP
+                    elif self.global_inflation >= target:
+                        if self.global_inflation > self.prev_global_inflation:
+                            gov_inflation_brake_factor = 0.1  # HARD BRAKE ON CLIMB
+                        else:
+                            gov_inflation_brake_factor = 0.4  # MAINTAIN SUPPRESSION
+                    else:
+                        # Between 90% and 100% of target
+                        gov_inflation_brake_factor = 0.8
                 else:
                     self.gov_brake_active_years = 0
-                
-                # EMERGENCY BRAKE: Hard slash if well above target
-                if self.global_inflation > 3.0 * self.inflation_target:
-                    gov_inflation_brake_factor = min(gov_inflation_brake_factor, 0.1) # Hard stop
 
-                # Update peak for next year
-                self.gov_peak_inflation = max(self.gov_peak_inflation, self.global_inflation)
+                # Update prev_inflation for next year's climb detection
+                self.prev_global_inflation = self.global_inflation
 
             # 0. Get capacity multiplier for this year (institutional learning)
             capacity = self.get_capacity_multiplier(year)
@@ -2363,7 +2369,6 @@ class GCR_ABM_Simulation:
                 "Gov_Debt_USD": self.total_gov_debt,
                 "Annual_Gov_Spending": annual_total_cost if gov_funding_active else 0.0,
                 "Gov_Brake_Factor": gov_inflation_brake_factor if gov_funding_active else 1.0,
-                "Gov_Peak_Inflation": self.gov_peak_inflation if gov_funding_active else 0.0,
                 "Market_Price": 0.0 if gov_funding_active else self.investor_market.market_price_xcr,
                 "XCR_Supply": 0.0 if gov_funding_active else self.total_xcr_supply,
                 "XCR_Minted": 0.0 if gov_funding_active else xcr_minted_this_year,
