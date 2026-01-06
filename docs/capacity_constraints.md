@@ -10,7 +10,7 @@ Prevent unrealistic deployment rates by enforcing channel-specific physical limi
 
 ```python
 self.max_capacity_gt_per_year = {
-    ChannelType.CDR: 10.0,           # Default CDR cap (slider 1-100 Gt/yr)
+    ChannelType.CDR: None,           # No hard cap for CDR/DAC scaling
     ChannelType.CONVENTIONAL: 30.0,  # Earlier taper to force CDR reliance
     ChannelType.COBENEFITS: 50.0,    # Nature-based potential (overlay exists separately)
     ChannelType.AVOIDED_DEFORESTATION: 5.0  # Land-use emissions ceiling
@@ -29,7 +29,7 @@ Notes:
 planned_rate_gt = self.get_planned_sequestration_rate(channel)
 max_capacity_gt = self.max_capacity_gt_per_year[channel]
 
-if planned_rate_gt >= max_capacity_gt:
+if max_capacity_gt is not None and planned_rate_gt >= max_capacity_gt:
     continue  # channel at capacity
 ```
 
@@ -50,5 +50,4 @@ if channel == ChannelType.CDR:
 
 ## Calibration Notes
 
-- If CDR appears artificially capped, increase `ChannelType.CDR` limit or disable capacity caps entirely.
 - If conventional mitigation crowds out CDR, lower the conventional cap or accelerate the conventional capacity limit timeline.

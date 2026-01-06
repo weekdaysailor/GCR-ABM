@@ -42,18 +42,23 @@ The simulation implements a true multi-agent system with five distinct agent cla
 
 **3. ProjectsBroker** - `gcr_model.py:222`
 - Manages portfolio of mitigation projects across 3 physical channels
-- **Project Initiation**: Projects start when `(market_price * R * brake_factor) >= marginal_cost`
+- **Project Initiation**: Projects start when `(market_price * brake_factor) >= marginal_cost`
 - **Dynamic Channel Distribution** (uses active countries only):
   - Channel 1 (CDR): Prefers tropical/developing countries (South America, Africa, Asia)
   - Channel 2 (Conventional): Prefers Tier 1 developed economies with infrastructure
   - Channel 3 (Avoided Deforestation): Prefers tropical/developing countries (South America, Africa, Asia)
 - Co-benefits: reward overlay (no separate projects)
 - **Project Lifecycle**:
-- Development phase: 1-2 years randomly assigned
+  - Development phase: 2-4 years randomly assigned
   - Operational phase: Annual sequestration once developed
+  - **Channel-specific lifespans**: CDR=100yr, Conventional=25yr, Avoided Deforestation=50yr
   - Stochastic health decay: 2% annual failure rate
 - Marginal costs increase with project count (resource depletion curve)
-- Capacity limits: CDR default 10 Gt/yr (slider 1-100), Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr
+- **Conventional cost penalties**:
+  - Budget depletion: 1x → 8x as cumulative deployment reaches 1000 Gt (earlier onset at 60% utilization)
+  - Net-zero proximity: 1x → 10x as E:S ratio drops from 2.0 → 1.0 (exponential penalty for shorter credit periods)
+- Capacity limits: Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr, CDR 20 Gt/yr
+- **Net-Zero Transition**: CM credits terminate **permanently** when E:S ratio first reaches ≤ 1.0; AvDef continues
 
 **4. InvestorMarket** - `gcr_model.py:239`
 - Represents aggregate market sentiment (0.0 = panic, 1.0 = full trust)
@@ -149,6 +154,54 @@ Brake releases as ratio falls
 - Brake thresholds: 10:1 light, 12:1 medium, 15:1 heavy (inflation-adjusted)
 - CQE budget: 5% of annual private capital inflow, capped at 0.5% of active GDP
 - Minting: `XCR = verified_sequestration * R * capacity * brake_factor`
+
+### Net-Zero Transition Mechanics
+
+The model implements a realistic transition where conventional mitigation (CM) and avoided deforestation dominate early (lower costs), then CDR takes over as net-zero approaches:
+
+**Emissions-to-Sinks Ratio**:
+```
+E:S Ratio = Human_Emissions / (CDR + Ocean_Uptake + Land_Uptake)
+```
+Note: Avoided deforestation prevents emissions (subtracted from Human_Emissions), not added to sinks (avoids double-counting)
+
+**Transition Logic**:
+1. **Ratio > 2.0**: Full CM project initiation and crediting; AvDef/CDR continue normally
+2. **Ratio 1.0-2.0**: CM project initiation ramps down linearly (factor = ratio - 1.0)
+3. **Ratio ≤ 1.0 (Net-Zero - First Time)**:
+   - **Conventional Mitigation**: XCR crediting STOPS **PERMANENTLY** (job done - emissions balanced)
+   - System sets `net_zero_ever_reached = True` flag
+   - Even if ratio later rises above 1.0, CM credits never resume
+   - **Avoided Deforestation**: Continues being credited (stores carbon in biomass like CDR)
+   - **CDR**: Continues being credited (active carbon removal)
+   - Operational CM infrastructure CONTINUES reducing emissions (no XCR, but still working)
+
+**Project Lifespans** (per Chen spec):
+- **CDR**: 100 years (long-term carbon storage)
+- **Conventional Mitigation**: 25 years (infrastructure turnover)
+- **Avoided Deforestation**: 50 years (forest maturation cycle)
+
+**Net-Zero Proximity Cost Penalty**:
+
+CM projects face economic pressure as net-zero approaches because:
+- **Truncated crediting period**: A CM project with 25yr lifespan starting at year 25 (operational ~year 27) would normally earn XCR for 25 years, but if net-zero hits at year 30, it only earns for ~3 years
+- **Uncertain ROI**: Investors can't predict exactly when net-zero will hit, making late-stage CM projects risky
+- **Cost multiplier** (exponential, starts at E:S ratio 5.0):
+  - E:S ratio 5.0+: 1.0x (no penalty)
+  - E:S ratio 4.0: 2.0x cost (early nervousness)
+  - E:S ratio 3.0: 3.9x cost (moderate concern)
+  - E:S ratio 2.0: 7.6x cost (high concern)
+  - E:S ratio 1.5: 10.7x cost (very high risk)
+  - E:S ratio 1.0: 15x cost (unprofitable)
+
+This naturally shifts capital from CM → CDR as net-zero approaches.
+
+**Key Insight**:
+- **Conventional Mitigation** avoids emissions → stops crediting **permanently** once net-zero first achieved (further crediting would be double-counting)
+- **Avoided Deforestation** stores carbon in biomass → continues crediting like CDR throughout
+- CM infrastructure continues operating and reducing emissions, just without XCR rewards
+- **Permanent Termination**: If E:S ratio temporarily rises above 1.0 later (e.g., project failures), CM credits do NOT resume
+- **Economic Decline**: CM costs rise exponentially (up to 10x) as E:S ratio drops from 2.0 → 1.0, making projects unprofitable before net-zero is reached
 
 ## Key Technical Concepts
 
@@ -282,8 +335,8 @@ venv/bin/streamlit run dashboard.py
 - Random seed for reproducibility
 - CDR learning rate (per doubling)
 - Conventional learning rate (per doubling)
-- CDR capacity cap (Gt/year)
 - Scale damping full‑scale deployment (Gt)
+- Sigmoid damping slope
 - Monte Carlo runs (ensemble count)
 - Run button to execute simulation
 
@@ -311,7 +364,7 @@ Located in `GCR_ABM_Simulation.__init__()` (gcr_model.py:380):
 - **CQE Budget**: 5% of annual private capital inflow, capped at 0.5% of active GDP
 - **Price Floor Revisions**: Every 5 years based on roadmap progress, inflation, and temperature
 - **BAU Emissions Flow**: 40 GtCO2/year, peak around year 6, plateau, then slow late‑century decline (~0.2%/yr)
-- **Capacity Limits**: CDR default 10 Gt/yr (slider 1-100), Conventional 30 Gt/yr
+- **Capacity Limits**: Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr; CDR has no hard cap
 - **Auditor Error Rate**: 1% (Class 3 operational risk)
 - **Chaos Monkey**: 5% chance per year of 0.5-1.5% inflation shock (only after GCR start)
 
@@ -320,13 +373,13 @@ Located in `GCR_ABM_Simulation.__init__()` (gcr_model.py:380):
 The model uses **deployment-based scale damping** where project size grows with cumulative industry experience, not calendar time.
 
 **Learning-by-Doing Curve (Project Scale Damping)**:
-- Sigmoid from **7% to 100%** scale across **0 → 30 Gt** cumulative deployment (industry-wide, default).
-- Midpoint at ~**9 Gt** (30% of full scale) for a smooth transition.
+- Sigmoid from **15% to 100%** scale across **0 → 25 Gt** cumulative deployment (industry-wide).
+- Midpoint at ~**7.5 Gt** (30% of full scale) for a smooth transition.
 
 **Scaling Mechanics**:
 - Base project scale: **10-100 MT/year** (random uniform).
 - Actual scale: `base_scale × damper(cumulative_gt)`.
-- Project initiation: **Capital- and capacity-limited**, scaled by climate urgency (no per‑country caps).
+- Project initiation: **Capital- and capacity-limited**, scaled by climate urgency, with sequential capital allocation (avoided deforestation → conventional → CDR; no per‑country caps).
 - Development lag: **1-2 years** before becoming operational.
 - CEA brake and CQE budget caps constrain aggressive growth.
 
@@ -338,15 +391,18 @@ The model uses **deployment-based scale damping** where project size grows with 
 **Realistic Constraints**:
 - Stochastic failure: **2% annual decay rate**.
 - Economic limits: CEA brake + CQE budget caps.
-- Physical limits: **CDR default 10 Gt/yr (slider 1-100)**, **Conventional 30 Gt/yr**.
+- Physical limits: **Conventional 30 Gt/yr**, **Avoided Deforestation 5 Gt/yr**, **CDR 20 Gt/yr**.
 
 Located in `ProjectsBroker.__init__()` (gcr_model.py:419):
-- **Base Costs**: CDR=$100/tonne, Conventional=$80/tonne
+- **Base Costs**: CDR=$100/tonne, Conventional=$80/tonne, Avoided Deforestation=$60/tonne
 - **Project Scale**: 10M-100M tonnes/year base (damped by cumulative deployment)
-- **Scale Damping**: Enabled by default, full scale at 45 Gt cumulative deployment (min scale ~7%, slider 10–50 Gt)
-- **Count Damping**: Project counts ramp with cumulative deployment (min 20% early, rising to full scale)
+- **Scale Damping**: Enabled by default, full scale at 25 Gt cumulative deployment (min scale ~15%)
+- **Count Damping**: Project counts ramp with cumulative deployment (min 40% early, rising to full scale)
+- **Sigmoid Slope**: Controls the ramp speed for scale/count damping and the CDR learning-rate taper
+- **CDR Capacity Limit**: 20 Gt/yr (energy, storage, materials constraints)
 - **Project Initiation Rate**: Capital‑limited (no per‑country caps), scaled by urgency
 - **Development Time**: 2-4 years randomly assigned
+- **Project Lifespans**: CDR=100yr, Conventional=25yr, Avoided Deforestation=50yr
 - **Project Failure**: 2% annual stochastic decay rate
 - **Resource Depletion**: Logarithmic scaling (15% per order-of-magnitude project count)
 
@@ -357,10 +413,10 @@ Located in `ProjectsBroker.__init__()` (gcr_model.py:419):
 @dataclass
 class Project:
     id: str
-    channel: ChannelType  # CDR, CONVENTIONAL, COBENEFITS
+    channel: ChannelType  # CDR, CONVENTIONAL, AVOIDED_DEFORESTATION
     country: str
     start_year: int
-    development_years: int
+    development_years: int  # 2-4 years randomly assigned
     annual_sequestration_tonnes: float
     marginal_cost_per_tonne: float
     r_base: float  # Base R-value from cost-effectiveness
@@ -368,9 +424,11 @@ class Project:
     status: ProjectStatus  # DEVELOPMENT, OPERATIONAL, FAILED
     health: float  # 1.0 = healthy, decays stochastically
     total_xcr_minted: float
+    years_operational: int  # Track operational lifespan (increments annually)
+    max_operational_years: int  # Channel-specific: CDR=100, CM=25, AvDef=50
 ```
 
-Note: Projects store both `r_base` (cost-effectiveness) and `r_effective` (with policy multiplier applied). XCR minting uses `r_effective` which is locked in at project creation. CDR, Conventional, and Avoided Deforestation projects are initiated; co-benefits are handled as an overlay.
+Note: Projects store both `r_base` (cost-effectiveness) and `r_effective` (with policy multiplier applied). XCR minting uses `r_effective` which is locked in at project creation. Projects retire when `years_operational >= max_operational_years`. CDR, Conventional, and Avoided Deforestation projects are initiated; co-benefits are handled as an overlay.
 
 ### Simulation Output DataFrame
 
@@ -457,9 +515,17 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - **Taper**: Conventional initiation tapers as utilization approaches the limit (no hard cutoff)
 - Adjust these to model different mitigation potential assumptions
 
+**Conventional Budget Depletion** ("easy stuff first" mechanics):
+- **Budget**: 1000 Gt total "easy" conventional mitigation potential
+- **Cost multiplier**: 4.0x maximum when budget exhausted (hard-to-abate transition)
+- **Capacity floor**: 10% minimum project initiation when budget exhausted
+- **Sigmoid transition**: Centered at 70% utilization, costs/capacity degrade sharply 70-100%
+- **Effect**: Early conventional is cheap ($18-25/tonne), rises to $50+/tonne as budget depletes
+- **Crossover**: CDR becomes cost-competitive when conventional budget ~80-100% utilized
+
 ### Understanding R-Value Mechanics
 - When modifying project economics, remember: Higher R_effective = more XCR per tonne
-- Projects are profitable when: `(market_price * R_effective * brake_factor) >= marginal_cost`
+- Project initiation gate uses: `(market_price * brake_factor) >= marginal_cost`
 - **R_base** captures cost-effectiveness, **R_effective** = R_base × policy_multiplier (currently fixed at 1.0)
 - XCR minting always uses R_effective (locked in at project creation)
 - **Important**: R is for cost-effectiveness and policy prioritization, not macro stability control
@@ -482,9 +548,10 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - To test constraint mechanisms: Run `venv/bin/python test_inflation_constraint.py` to verify brake and budget dynamics
 
 **Technology Transition Issues**:
-- If CDR never becomes competitive: Increase CDR learning rate (>20%), reduce CDR base costs, or tighten conventional capacity limits
-- If conventional dominates too long: Lower the conventional capacity limit year or reduce the residual floor to shift more growth to CDR
-- If the transition feels too abrupt: Increase the conventional capacity limit year or raise the residual floor to soften the taper
+- If CDR never becomes competitive: Increase CDR learning rate (>20%), reduce CDR base costs, or reduce conventional budget (faster depletion)
+- If conventional dominates too long: Reduce `conventional_budget_gt` (default 1000 Gt), increase `conventional_budget_cost_multiplier` (default 4.0x)
+- If transition happens too early: Increase `conventional_budget_gt` to delay hard-to-abate phase
+- If the transition feels too abrupt: Lower `conventional_budget_cost_multiplier` or raise capacity floor
 - If costs drop unrealistically fast: Reduce learning rates or increase the depletion coefficient (0.15 in the log scaling)
 - If costs don't drop enough: Increase learning rates, ensure projects are deploying (check profitability), reduce resource depletion
 

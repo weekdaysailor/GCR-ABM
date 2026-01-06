@@ -60,9 +60,9 @@ conventional_learning_rate = st.sidebar.slider("Conventional Learning Rate (per 
 scale_full_deployment_gt = st.sidebar.slider("Scale Damping Full-Scale Deployment (Gt)",
                                              min_value=10, max_value=50, value=45, step=5,
                                              help="Lower values scale faster; higher values scale slower")
-cdr_capacity_gt = st.sidebar.slider("CDR Capacity Cap (Gt/yr)",
-                                    min_value=1, max_value=100, value=10, step=1,
-                                    help="Annual CDR deployment cap (Gt/year)")
+damping_steepness = st.sidebar.slider("Sigmoid Damping Slope",
+                                      min_value=2.0, max_value=20.0, value=8.0, step=0.5,
+                                      help="Steeper values ramp scale/count and CDR learning faster around the midpoint")
 
 st.sidebar.markdown("---")
 enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
@@ -93,7 +93,7 @@ if run_button:
                                      cdr_learning_rate=cdr_learning_rate,
                                      conventional_learning_rate=conventional_learning_rate,
                                      scale_full_deployment_gt=scale_full_deployment_gt,
-                                     cdr_capacity_gt=cdr_capacity_gt)
+                                     damping_steepness=damping_steepness)
             df_run = sim.run_simulation()
             df_run["run"] = i
             dfs.append(df_run)

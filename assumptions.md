@@ -34,12 +34,16 @@ This model is a simplified, global, yearly simulation. The notes below describe 
 - Operational projects can fail stochastically; failure risk scales with climate conditions.
 - Failure reversals return 10% of CDR storage and 50% of mitigation (conventional + avoided deforestation) to the atmosphere.
 - Project retirement accelerates when CO2 falls below the target.
-- Project initiation is limited by available private capital and physical capacity, not by per‑country caps.
+- Project initiation is limited by available private capital and channel-specific physical capacity, not by per‑country caps (CDR has no hard cap).
+- Available capital is allocated sequentially by channel order: avoided deforestation, conventional mitigation, then CDR.
+- Projects are initiated when market price clears the channel’s own marginal cost (not tied to the CDR cost gate).
 - Project initiation is also throttled by the CEA brake factor when stability or inflation constraints tighten.
 - Project scale ramps with cumulative deployment using a normalized sigmoid (starts ~7% of base and reaches full scale around 45 Gt by default; slider range 10–50 Gt).
 - Project counts are damped by cumulative deployment (minimum 20% of potential projects early, rising to full scale with experience).
+- Sigmoid slope controls how quickly scale/count and CDR learning-rate taper transition from early-stage to mature scaling.
+- CDR learning rates taper with deployment (early tech gains, later scaling) to a small floor.
 - Conventional capacity tapers down as utilization approaches the hard‑to‑abate limit (no hard cutoff).
-- CDR capacity is configurable (1-100 Gt/year via dashboard); conventional mitigation defaults to ~30 Gt/year.
+- Conventional mitigation defaults to ~30 Gt/year; avoided deforestation defaults to ~5 Gt/year.
 
 ## XCR & Price Floor
 - XCR is the reward token. Minting occurs only after verification.

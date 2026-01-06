@@ -155,7 +155,7 @@ print(f"Total projects: {len(sim.projects_broker.projects)}")
 Edit `gcr_model.py` to adjust:
 - **Economic**: Price floor, inflation targets, CQE ratio and GDP cap
 - **Projects**: Base costs, sequestration rates, failure rates
-- **Learning**: CDR/conventional learning rates, scale damping behavior
+- **Learning**: CDR/conventional learning rates, scale damping behavior, sigmoid slope
 - **Policy**: Sigmoid damping sharpness, price floor revision cycles, adoption rate
 - **Market**: Sentiment decay/recovery rates
 - **Countries**: GDP, CQE capacity, tier/region assignments in country pool
