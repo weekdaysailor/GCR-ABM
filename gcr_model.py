@@ -461,7 +461,7 @@ class ProjectsBroker:
         self.scale_damping_enabled = True
         self.full_scale_deployment_gt = 25.0  # Full-scale threshold (Gt) - faster ramp for proven tech
         self.count_damping_enabled = True
-        self.count_damping_min_factor = 0.40  # Minimum fraction of project counts early on
+        self.count_damping_min_factor = 0.80  # Increased from 0.40 for "Great Restore"
         self.damping_steepness = 8.0  # Sigmoid slope multiplier for scale/count damping + CDR learning taper
         self.cdr_learning_floor_factor = 0.25  # Late-stage learning rate floor factor
         # Co-benefits pool: fraction of XCR held back for redistribution
@@ -515,10 +515,10 @@ class ProjectsBroker:
         # Maximum annual sequestration capacity by channel (Gt/year)
         # Represents physical/technological limits on deployment scale
         self.max_capacity_gt_per_year = {
-            ChannelType.CDR: 20.0,  # Energy, storage, materials constraints
+            ChannelType.CDR: 60.0,  # Increased to 60Gt for "Great Restore" final drawdown
             ChannelType.CONVENTIONAL: 30.0,  # Earlier taper to force CDR reliance
             ChannelType.COBENEFITS: 50.0,  # Nature-based solutions - large potential
-            ChannelType.AVOIDED_DEFORESTATION: 5.0  # Land-use emissions ceiling
+            ChannelType.AVOIDED_DEFORESTATION: 15.0  # Increased to 15Gt for drawdown
         }
 
     def calculate_project_scale_damper(self, cumulative_deployment_gt: float = 0.0) -> float:
@@ -547,7 +547,7 @@ class ProjectsBroker:
         # Total cumulative deployment across all channels (industry-wide learning)
         total_deployment_gt = sum(self.cumulative_deployment.values()) / 1e9
 
-        min_scale = 0.15  # Projects start at 15% scale (1.5-15 MT/year)
+        min_scale = 0.50  # Increased from 0.15 for "Great Restore" scaling
         if total_deployment_gt <= 0:
             return min_scale
         if total_deployment_gt >= self.full_scale_deployment_gt:
@@ -742,20 +742,16 @@ class ProjectsBroker:
         """
         ratio = self.current_emissions_to_sinks_ratio
 
-        if ratio >= 6.0:
+        # Proximity Penalty: Relaxed for "Great Restore" to allow net-zero transition
+        # We need a gentle transition, not a cliff.
+        if ratio >= 4.0:
             return 1.0
         elif ratio <= 1.0:
-            return 100.0  # Massive penalty at net-zero
+            return 5.0  # Capped at 5x instead of 100x to allow final stretch
 
-        # Very steep exponential: multiplier = 100^((6 - ratio) / 5)
-        # At ratio 6.0: 100^0 = 1.0
-        # At ratio 5.0: 100^0.2 = 2.51
-        # At ratio 4.0: 100^0.4 = 6.31
-        # At ratio 3.0: 100^0.6 = 15.85
-        # At ratio 2.0: 100^0.8 = 39.81
-        # At ratio 1.0: 100^1.0 = 100.0
-        exponent = (6.0 - ratio) / 5.0
-        multiplier = 100.0 ** exponent
+        # Linear ramp from 1.0 to 5.0
+        progress = (4.0 - ratio) / 3.0
+        multiplier = 1.0 + 4.0 * progress
 
         return multiplier
 
@@ -874,31 +870,17 @@ class ProjectsBroker:
         if current_co2_ppm >= taper_start:
             # High urgency: Above taper start - full capacity
             urgency_factor = 1.0
-        elif current_co2_ppm > 370.0:
-            # Early approach: Gentle taper
-            range_size = taper_start - 370.0
-            urgency_factor = 0.6 + 0.4 * (current_co2_ppm - 370.0) / range_size
-        elif current_co2_ppm > 360.0:
-            # Mid approach: Moderate taper
-            # Inflation-sensitive: High inflation tapers much more steeply
-            if inflation_ratio > 2.5:  # High inflation (>5%)
-                urgency_factor = 0.15 + 0.45 * (current_co2_ppm - 360.0) / 10.0
-            elif inflation_ratio > 1.5:  # Medium inflation (3-5%)
-                urgency_factor = 0.2 + 0.4 * (current_co2_ppm - 360.0) / 10.0
-            else:  # Low inflation
-                urgency_factor = 0.3 + 0.3 * (current_co2_ppm - 360.0) / 10.0
         elif current_co2_ppm > target_co2:
-            # Final approach: Steep taper
-            # Inflation-sensitive: High inflation drops to near-zero capacity
-            if inflation_ratio > 2.5:  # High inflation (>5%)
-                urgency_factor = 0.01 + 0.14 * (current_co2_ppm - target_co2) / 10.0
-            elif inflation_ratio > 1.5:  # Medium inflation (3-5%)
-                urgency_factor = 0.02 + 0.18 * (current_co2_ppm - target_co2) / 10.0
-            else:  # Low inflation
-                urgency_factor = 0.05 + 0.25 * (current_co2_ppm - target_co2) / 10.0
+            # Gentle approach for "Great Restore", but finishing at 0% new initiation
+            # We want to maintain momentum until the target is hit, then stop building.
+            range_size = taper_start - target_co2
+            progress = (current_co2_ppm - target_co2) / range_size
+            # urgency_factor = 0.5 + 0.5 * progress  # Linear from 1.0 to 0.5
+            urgency_factor = progress ** 0.5 # Square root taper: stay strong then drop off
         else:
-            # Below target: minimal maintenance only
-            urgency_factor = 0.02
+            # At or below target: STOP initiation of new infrastructure expansion
+            # Only allow minimal maintenance/replacement if needed, but for ABM simplicity, 0.0
+            urgency_factor = 0.0
 
         return max(urgency_factor, 0.0)
 
@@ -983,7 +965,12 @@ class ProjectsBroker:
 
             # Check channel capacity limits (Gt/year)
             planned_rate_gt = self.get_planned_sequestration_rate(channel)
-            max_capacity_gt = self.max_capacity_gt_per_year[channel]
+            
+            # Use dynamic sigmoid limit for CDR; use static for others
+            if channel == ChannelType.CDR:
+                max_capacity_gt = self.get_cdr_capacity_limit(current_year)
+            else:
+                max_capacity_gt = self.max_capacity_gt_per_year[channel]
 
             remaining_capacity_gt = None
             if max_capacity_gt is not None:
@@ -1024,8 +1011,8 @@ class ProjectsBroker:
             # Estimate how many projects available capital and capacity can support
             scale_damper = self.calculate_project_scale_damper()
             count_damper = self.calculate_project_count_damper()
-            expected_base_seq = 5.5e7  # Expected base scale (10-100M tonnes avg)
-            min_base_seq = 1e7  # Minimum base scale
+            expected_base_seq = 1.5e7  # Reduced from 5.5e7 to avoid capital-limited truncation in Year 1
+            min_base_seq = 1e6  # Minimum base scale
             expected_seq = expected_base_seq * scale_damper
             min_seq = min_base_seq * scale_damper
 
@@ -1035,7 +1022,7 @@ class ProjectsBroker:
             else:
                 max_by_capacity = int((remaining_capacity_gt * 1e9) / max(min_seq, 1.0))
             max_projects = max(min(max_by_capital, max_by_capacity), 0)
-            num_projects = int(max_projects * urgency_factor * capacity_factor * count_damper * net_zero_ramp_factor)
+            num_projects = int(max_projects * urgency_factor * capacity_factor * count_damper * net_zero_ramp_factor * brake_factor)
 
             # Inner loop: create multiple projects for this channel
             for _ in range(num_projects):
@@ -1129,14 +1116,13 @@ class ProjectsBroker:
                     inflation_ratio = max(current_inflation, 0.0) / 0.02  # Normalize to 2%
 
                     # Base retirement rates
-                    if overshoot_ppm <= 5:
-                        base_rate = 0.15  # Minimal overshoot
-                    elif overshoot_ppm <= 15:
-                        base_rate = 0.22  # Moderate overshoot
+                    # "Great Restore" Retirement Rates (Lower to allow drawdown)
+                    if overshoot_ppm <= 10:
+                        base_rate = 0.02  # Minimal overshoot - keep projects!
                     elif overshoot_ppm <= 30:
-                        base_rate = 0.30  # Significant overshoot
+                        base_rate = 0.05  # Moderate overshoot
                     else:
-                        base_rate = 0.40  # Severe overshoot
+                        base_rate = 0.10  # Significant overshoot
 
                     # Inflation adjustment: High inflation → faster retirement
                     if inflation_ratio > 2.5:  # High inflation (>5%)
@@ -1167,6 +1153,31 @@ class ProjectsBroker:
     def get_operational_projects(self) -> List[Project]:
         """Return list of operational projects ready for verification"""
         return [p for p in self.projects if p.status == ProjectStatus.OPERATIONAL]
+
+    def get_total_operational_cost(self, exclude_channels: List[ChannelType] = None) -> float:
+        """Calculate total annual cost for all active projects (operational + development)"""
+        total_cost = 0.0
+        exclude = exclude_channels or []
+        for project in self.projects:
+            if project.status in (ProjectStatus.OPERATIONAL, ProjectStatus.DEVELOPMENT):
+                if project.channel not in exclude:
+                    total_cost += project.marginal_cost_per_tonne * project.annual_sequestration_tonnes
+        return total_cost
+
+    def get_cdr_capacity_limit(self, current_year: int) -> float:
+        """Calculate dynamic CDR capacity limit based on sigmoid ramp-up
+        
+        Models gradual industrial/technological scaling.
+        Center: Year 30
+        Steepness (k): 0.15
+        Max: ~60 Gt/year (from dashboard/const)
+        """
+        max_cap = self.max_capacity_gt_per_year[ChannelType.CDR]
+        midpoint = 30.0
+        k = 0.15
+        
+        capacity_limit = max_cap / (1.0 + np.exp(-k * (current_year - midpoint)))
+        return capacity_limit
 
 
 class InvestorMarket:
@@ -1314,10 +1325,11 @@ class CapitalMarket:
         progress_urgency = min(max(roadmap_gap / max_gap, 0.0), 1.0)
 
         # Combined forward guidance (weighted average)
+        # "Great Restore" tuning: Maintain high guidance as time runs out
         forward_guidance = (
-            0.4 * co2_urgency +      # 40% weight: current state
-            0.3 * time_urgency +     # 30% weight: deadline pressure
-            0.3 * progress_urgency   # 30% weight: falling behind
+            0.3 * co2_urgency +      # 30% weight: current state
+            0.5 * time_urgency +     # 50% weight: deadline pressure (stronger late)
+            0.2 * progress_urgency   # 20% weight: falling behind
         )
 
         return forward_guidance
@@ -1479,8 +1491,10 @@ class GCR_ABM_Simulation:
                  adoption_rate: float = 3.5, inflation_target: float = 0.02,
                  xcr_start_year: int = 0, years_to_full_capacity: int = 5,
                  cdr_learning_rate: float = 0.20, conventional_learning_rate: float = 0.12,
-                 scale_full_deployment_gt: float = 25.0,
+                 scale_full_deployment_gt: float = 45.0,
                  damping_steepness: float = 8.0,
+                 max_cdr_capacity: float = 40.0,
+                 funding_mode: str = "XCR",
                  # LLM agent parameters
                  llm_enabled: bool = False,
                  llm_model: str = "llama3.2",
@@ -1501,6 +1515,8 @@ class GCR_ABM_Simulation:
             conventional_learning_rate: Conventional tech learning rate
             scale_full_deployment_gt: Full-scale deployment threshold for scale damping (Gt)
             damping_steepness: Sigmoid slope for scale/count damping and CDR learning taper
+            max_cdr_capacity: Maximum annual CDR sequestration capacity (GtCO2/year)
+            funding_mode: Scheme for funding projects ("XCR" or "GOVT")
             llm_enabled: Use LLM-powered agents (requires Ollama)
             llm_model: Ollama model name (llama3.2, mistral, etc.)
             llm_cache_mode: Cache mode (disabled, read_write, read_only, write_only)
@@ -1511,6 +1527,7 @@ class GCR_ABM_Simulation:
         self.price_floor = price_floor
         self.adoption_rate = adoption_rate  # Countries joining per year
         self.inflation_target = inflation_target  # Target inflation rate (default 2%)
+        self.funding_mode = funding_mode  # "XCR" or "GOVT"
         self.xcr_start_year = xcr_start_year  # Year when XCR system starts
         self.years_to_full_capacity = years_to_full_capacity  # Ramp-up period
         self.step = 0
@@ -1526,6 +1543,9 @@ class GCR_ABM_Simulation:
         self.co2_level = 420.0  # ppm
         self.global_inflation = 0.0  # Start at baseline; target guides corrections
         self.total_xcr_supply = 0.0
+        self.total_gov_debt = 0.0  # Tracks spending in "GOVT" mode
+        self.gov_peak_inflation = 0.0  # Tracks max inflation seen in GOVT mode
+        self.gov_brake_active_years = 0  # Number of consecutive years brake has been on
         self.net_zero_ever_reached = False  # Track if net-zero achieved (permanent CM credit stop)
         self.carbon_cycle = CarbonCycle(initial_co2_ppm=self.co2_level)
         self.co2_level = self.carbon_cycle.co2_ppm  # Keep ppm aligned with carbon cycle state
@@ -1697,6 +1717,7 @@ class GCR_ABM_Simulation:
         self.projects_broker.learning_rates[ChannelType.CONVENTIONAL] = conventional_learning_rate
         self.projects_broker.full_scale_deployment_gt = scale_full_deployment_gt
         self.projects_broker.damping_steepness = damping_steepness
+        self.projects_broker.max_capacity_gt_per_year[ChannelType.CDR] = max_cdr_capacity
         self.auditor = Auditor(error_rate=0.01)
 
     def chaos_monkey(self):
@@ -1813,6 +1834,26 @@ class GCR_ABM_Simulation:
                 self.central_bank.annual_cqe_spent = 0.0
                 self.central_bank.current_budget_year = year
 
+            gov_funding_active = self.funding_mode == "GOVT"
+            
+            # Government Inflation Brake logic (update peak and calculate factor)
+            gov_inflation_brake_factor = 1.0
+            if gov_funding_active:
+                # Check against PREVIOUS year's peak for sensitivity
+                if self.gov_peak_inflation > self.inflation_target and self.global_inflation >= 0.9 * self.gov_peak_inflation:
+                    self.gov_brake_active_years += 1
+                    # 90% peak: slow by 10% (0.9); stay high: slash by 20% (0.8)
+                    gov_inflation_brake_factor = 0.9 if self.gov_brake_active_years == 1 else 0.8
+                else:
+                    self.gov_brake_active_years = 0
+                
+                # EMERGENCY BRAKE: Hard slash if well above target
+                if self.global_inflation > 3.0 * self.inflation_target:
+                    gov_inflation_brake_factor = min(gov_inflation_brake_factor, 0.1) # Hard stop
+
+                # Update peak for next year
+                self.gov_peak_inflation = max(self.gov_peak_inflation, self.global_inflation)
+
             # 0. Get capacity multiplier for this year (institutional learning)
             capacity = self.get_capacity_multiplier(year)
 
@@ -1829,21 +1870,20 @@ class GCR_ABM_Simulation:
                 self.chaos_monkey()
 
                 # Inflation correction toward target
-                # Central banks actively manage inflation with interest rates
                 inflation_gap = self.global_inflation - self.inflation_target
-                correction_rate = 0.25  # 25% correction per year (was 10%)
-                # Stronger correction when far from target
-                if abs(inflation_gap) > 0.02:  # More than 2pp away
-                    correction_rate = 0.4  # 40% when inflation problematic
+                correction_rate = 0.25
+                if abs(inflation_gap) > 0.02:
+                    correction_rate = 0.4
                 self.global_inflation -= inflation_gap * correction_rate
             else:
-                # No GCR policy effects before the start year
                 self.global_inflation = 0.0
 
-            # 2. Update investor sentiment
+            # 2. Update investor sentiment & market (SKIP IN GOVT MODE)
             price_floor_prev = self.price_floor
+            net_capital_flow, capital_demand_premium, forward_guidance = (0.0, 0.0, 0.0)
+            market_cap = 0.0
 
-            if system_active:
+            if system_active and not gov_funding_active:
                 self.investor_market.update_sentiment(
                     self.cea.warning_8to1_active,
                     self.global_inflation,
@@ -1852,12 +1892,10 @@ class GCR_ABM_Simulation:
                     self.cea.initial_co2_ppm
                 )
 
-            # 2b. Update capital market (private investors)
-            # Calculate roadmap gap for forward guidance
-            roadmap_target = self.cea.calculate_roadmap_target(year, self.years)
-            roadmap_gap = self.co2_level - roadmap_target
-
-            if system_active:
+                # Update capital market (private investors)
+                roadmap_target = self.cea.calculate_roadmap_target(year, self.years)
+                roadmap_gap = self.co2_level - roadmap_target
+                
                 market_age_years = year - self.xcr_start_year
                 net_capital_flow, capital_demand_premium, forward_guidance = self.capital_market.update_capital_flows(
                     self.co2_level, year, self.years, roadmap_gap,
@@ -1865,21 +1903,16 @@ class GCR_ABM_Simulation:
                     self.investor_market.sentiment, self.total_xcr_supply,
                     self.price_floor, market_age_years
                 )
-            else:
-                net_capital_flow, capital_demand_premium, forward_guidance = (0.0, 0.0, 0.0)
 
-            # 2c. Calculate market price (sentiment + capital demand)
-            if system_active:
+                # Calculate market price (sentiment + capital demand)
                 self.investor_market.calculate_price(capital_demand_premium)
-            market_cap = self.total_xcr_supply * self.investor_market.market_price_xcr if system_active else 0.0
+                market_cap = self.total_xcr_supply * self.investor_market.market_price_xcr
 
-            # 2c2. Update CQE budget (5% of annual private capital inflow)
-            if system_active:
+                # Update CQE budget (5% of annual private capital inflow)
                 annual_private_inflow = max(net_capital_flow, 0.0)
                 self.central_bank.update_cqe_budget(annual_private_inflow)
 
-            # 3. CEA updates policy
-            if system_active:
+                # CEA updates policy
                 self.cea.update_policy(
                     self.co2_level,
                     market_cap,
@@ -1888,8 +1921,7 @@ class GCR_ABM_Simulation:
                     budget_utilization
                 )
 
-            # 3b. CEA adjusts price floor based on roadmap progress (only after start)
-            if system_active:
+                # CEA adjusts price floor
                 self.price_floor, revision_occurred = self.cea.adjust_price_floor(
                     self.co2_level,
                     self.price_floor,
@@ -1898,17 +1930,19 @@ class GCR_ABM_Simulation:
                     current_inflation=self.global_inflation,
                     temperature_anomaly=self.carbon_cycle.temperature
                 )
+                # Update agents
+                self.central_bank.price_floor_rcc = self.price_floor
+                self.investor_market.price_floor = self.price_floor
             else:
                 revision_occurred = False
-            price_floor_delta = self.price_floor - price_floor_prev
-            # Update price floor in agents
-            self.central_bank.price_floor_rcc = self.price_floor
-            self.investor_market.price_floor = self.price_floor
 
             # 4. Projects broker initiates new projects
             # Only initiate projects if capacity > 0 (system active)
+            # In GOVT mode, use a high effective price to ensure economic initiation
+            effective_init_price = 1000.0 if gov_funding_active else (self.investor_market.market_price_xcr * self.cea.brake_factor)
+            
             if capacity > 0 and system_active:
-                available_capital_usd = max(net_capital_flow, 0.0)
+                available_capital_usd = 1e15 if gov_funding_active else max(net_capital_flow, 0.0) # Unlimited govt credit
                 # Use operational conventional capacity to cap new project initiation
                 operational_conventional_gt = self.projects_broker.get_current_sequestration_rate(ChannelType.CONVENTIONAL)
                 remaining_conventional_need_gt = max(
@@ -1935,24 +1969,24 @@ class GCR_ABM_Simulation:
                 emissions_to_sinks_ratio = effective_emissions_gt / total_sinks_gt
 
                 # Check if net-zero achieved for the first time (permanent CM credit termination)
-                # Use threshold of 1.5 to catch "approaching net-zero" (CM job mostly done)
-                if emissions_to_sinks_ratio <= 1.5 and not self.net_zero_ever_reached:
+                # "Great Restore" Hard Stop: EXACTLY at 1.0 ratio
+                if emissions_to_sinks_ratio <= 1.0 and not self.net_zero_ever_reached:
                     self.net_zero_ever_reached = True
-                    print(f"[Year {year}] NET-ZERO APPROACHING: Conventional mitigation credits permanently terminated (E:S ratio = {emissions_to_sinks_ratio:.3f})")
-
+                    print(f"[Year {year}] NET-ZERO ACHIEVED: Conventional mitigation credits permanently terminated (E:S ratio = {emissions_to_sinks_ratio:.3f})")
+ 
                 self.projects_broker.initiate_projects(
-                    self.investor_market.market_price_xcr,
-                    self.price_floor,
-                    self.cea,
-                    year,
-                    self.co2_level,  # Pass current CO2 for urgency calculation
-                    self.global_inflation,
-                    available_capital_usd,
-                    self.cea.brake_factor,
-                    residual_emissions_gt=remaining_conventional_need_gt,
-                    residual_luc_emissions_gt=remaining_luc_emissions_gt,
+                    available_capital_usd=available_capital_usd,
+                    market_price_xcr=1000.0 if gov_funding_active else self.investor_market.market_price_xcr,
+                    price_floor=self.price_floor,
+                    brake_factor=gov_inflation_brake_factor if gov_funding_active else self.cea.brake_factor,
+                    current_year=year,
+                    current_co2_ppm=self.co2_level,
+                    current_inflation=self.global_inflation,
                     emissions_to_sinks_ratio=emissions_to_sinks_ratio,
-                    net_zero_ever_reached=self.net_zero_ever_reached
+                    net_zero_ever_reached=self.net_zero_ever_reached,
+                    cea=self.cea,
+                    residual_emissions_gt=remaining_conventional_need_gt,
+                    residual_luc_emissions_gt=land_use_change_gtco2
                 )
             else:
                 emissions_to_sinks_ratio = 10.0  # Default high ratio before system active
@@ -2033,37 +2067,48 @@ class GCR_ABM_Simulation:
                     xcr_change_adjusted = xcr_change_raw * capacity * brake_factor
 
                     if audit_passed and xcr_change_raw > 0:
-                        # Successful verification - MINT XCR (hold back a co-benefit pool slice)
-                        pool_contribution = xcr_change_adjusted * self.projects_broker.cobenefit_pool_fraction
-                        project_mint = xcr_change_adjusted - pool_contribution
-                        xcr_minted_this_year += project_mint
+                        # Successful verification - SEQUESTRATION COUNTED
                         total_sequestration += credited_tonnes
                         project.total_sequestered_tonnes += credited_tonnes
+
+                        # Update cumulative deployment for learning curves
+                        self.projects_broker.update_cumulative_deployment(
+                            project.channel,
+                            credited_tonnes
+                        )
+
                         if project.channel == ChannelType.CDR:
                             cdr_sequestration += credited_tonnes
                             cdr_sequestration_tonnes += credited_tonnes
                         elif project.channel == ChannelType.CONVENTIONAL:
                             conventional_mitigation += credited_tonnes
                             conv_sequestration_tonnes += credited_tonnes
-                        # Update cumulative deployment for learning curves
-                        self.projects_broker.update_cumulative_deployment(
-                            project.channel,
-                            credited_tonnes
-                        )
-                        project.total_xcr_minted += project_mint
-                        cobenefit_pool += pool_contribution
-                        if project.co_benefit_score > 0:
-                            cobenefit_candidates.append((project, project.co_benefit_score))
 
-                        # Track XCR earned by country (use adjusted amount)
-                        if project.country in self.countries:
-                            self.countries[project.country]["xcr_earned"] += project_mint
-                    elif not audit_passed:
-                        # Failed audit - BURN XCR (negative value)
-                        xcr_burned_this_year += abs(xcr_change_adjusted)  # Track as positive
+                        if not gov_funding_active:
+                            # MINT XCR (hold back a co-benefit pool slice)
+                            brake_factor = self.cea.brake_factor
+                            xcr_change_adjusted = xcr_change_raw * capacity * brake_factor
+                            
+                            pool_contribution = xcr_change_adjusted * self.projects_broker.cobenefit_pool_fraction
+                            project_mint = xcr_change_adjusted - pool_contribution
+                            xcr_minted_this_year += project_mint
+                            project.total_xcr_minted += project_mint
+                            
+                            cobenefit_pool += pool_contribution
+                            if project.co_benefit_score > 0:
+                                cobenefit_candidates.append((project, project.co_benefit_score))
 
-                # Redistribute co-benefit pool across eligible projects (proportional to score)
-                if cobenefit_pool > 0 and cobenefit_candidates:
+                            # Track XCR earned by country
+                            if project.country in self.countries:
+                                self.countries[project.country]["xcr_earned"] += project_mint
+                    elif not audit_passed and not gov_funding_active:
+                        # Failed audit - BURN XCR (only in XCR mode)
+                        brake_factor = self.cea.brake_factor
+                        xcr_change_adjusted = xcr_change_raw * capacity * brake_factor
+                        xcr_burned_this_year += abs(xcr_change_adjusted)
+
+                # Redistribute co-benefit pool (SKIP IN GOVT MODE)
+                if not gov_funding_active and cobenefit_pool > 0 and cobenefit_candidates:
                     total_score = sum(score for _, score in cobenefit_candidates)
                     if total_score > 0:
                         for project, score in cobenefit_candidates:
@@ -2073,9 +2118,34 @@ class GCR_ABM_Simulation:
                             project.total_xcr_minted += bonus
                             if project.country in self.countries:
                                 self.countries[project.country]["xcr_earned"] += bonus
-
-            # Update XCR supply from minting and burning
-            self.total_xcr_supply += xcr_minted_this_year - xcr_burned_this_year
+            # 6. Economic cleanup and audit handling (burn XCR for failures)
+            if gov_funding_active:
+                # In GOVT mode, total cost is the annual spending for CDR and Avoided Deforestation
+                # Conventional Mitigation costs are assumed covered by existing markets (Cap & Trade, CBAM)
+                annual_gov_spending = self.projects_broker.get_total_operational_cost(
+                    exclude_channels=[ChannelType.CONVENTIONAL]
+                )
+                self.total_gov_debt += annual_gov_spending
+                
+                # Direct inflation impact from deficit spending
+                active_gdp_tril = sum(country["gdp_tril"] for country in self.countries.values())
+                active_gdp_usd = active_gdp_tril * 1e12
+                gov_inflation_impact = (annual_gov_spending / active_gdp_usd) * 5 if active_gdp_usd > 0 else 0.0
+                gov_inflation_impact = float(np.clip(gov_inflation_impact, 0.0, 0.05)) # Cap at 5% per year
+                self.global_inflation = max(0.0, self.global_inflation + gov_inflation_impact)
+                
+                annual_total_cost = annual_gov_spending # For result logging
+                
+                xcr_minted_this_year = 0.0
+                xcr_burned_this_year = 0.0
+                reversal_tonnes_audits = 0.0
+                reversal_tonnes_projects = 0.0
+                cobenefit_bonus_xcr = 0.0
+                xcr_purchased = 0.0
+            else:
+                # XCR Market mode (Standard)
+                # Update XCR supply from minting and burning
+                self.total_xcr_supply += xcr_minted_this_year - xcr_burned_this_year
 
             # 7. Central bank defends floor with CQE
             price_support, inflation_impact, xcr_purchased = self.central_bank.defend_floor(
@@ -2120,6 +2190,14 @@ class GCR_ABM_Simulation:
             human_emissions_gtco2 = max(
                 0.0, self.bau_emissions_gt_per_year - operational_conv_gt
             )
+ 
+            # "Great Restore" Stability Lock: 
+            # Post-net-zero, any emission avoidance becomes permanent structural change.
+            # If CM retires, it is replaced by zero-emission tech (represented by lowering BAU).
+            if self.net_zero_ever_reached:
+                # Ratchet BAU down to the human emissions floor
+                self.bau_emissions_gt_per_year = min(self.bau_emissions_gt_per_year, human_emissions_gtco2)
+ 
             actual_emissions_gtc = human_emissions_gtco2 * gtc_per_gtco2
 
             # CDR removes CO2 from stock (active removal)
@@ -2276,11 +2354,21 @@ class GCR_ABM_Simulation:
                 "Capital_Outflow_Cumulative": self.capital_market.cumulative_capital_outflow,
 
                 # NEW: CEA brake and CQE budget tracking
-                "CEA_Brake_Factor": self.cea.brake_factor,
-                "Annual_CQE_Spent": self.central_bank.annual_cqe_spent,
-                "Annual_CQE_Budget": self.central_bank.total_cqe_budget,
-                "CQE_Budget_Utilization": (self.central_bank.annual_cqe_spent / self.central_bank.total_cqe_budget
-                                           if self.central_bank.total_cqe_budget > 0 else 0.0)
+                "CEA_Brake_Factor": 0.0 if gov_funding_active else self.cea.brake_factor,
+                "Annual_CQE_Spent": 0.0 if gov_funding_active else self.central_bank.annual_cqe_spent,
+                "Annual_CQE_Budget": 0.0 if gov_funding_active else self.central_bank.total_cqe_budget,
+                "CQE_Budget_Utilization": (0.0 if gov_funding_active else 
+                                           (self.central_bank.annual_cqe_spent / self.central_bank.total_cqe_budget
+                                           if self.central_bank.total_cqe_budget > 0 else 0.0)),
+                "Gov_Debt_USD": self.total_gov_debt,
+                "Annual_Gov_Spending": annual_total_cost if gov_funding_active else 0.0,
+                "Gov_Brake_Factor": gov_inflation_brake_factor if gov_funding_active else 1.0,
+                "Gov_Peak_Inflation": self.gov_peak_inflation if gov_funding_active else 0.0,
+                "Market_Price": 0.0 if gov_funding_active else self.investor_market.market_price_xcr,
+                "XCR_Supply": 0.0 if gov_funding_active else self.total_xcr_supply,
+                "XCR_Minted": 0.0 if gov_funding_active else xcr_minted_this_year,
+                "XCR_Burned_Annual": 0.0 if gov_funding_active else xcr_burned_this_year,
+                "Investor_Sentiment": 0.5 if gov_funding_active else self.investor_market.sentiment
             })
 
         return pd.DataFrame(results)

@@ -46,8 +46,10 @@ inflation_target = st.sidebar.slider("Inflation Target (%)", min_value=0.0, max_
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("XCR System Ramping")
-xcr_start_year = st.sidebar.slider("XCR Start Year", min_value=0, max_value=20, value=0, step=1,
-                                   help="Year when XCR system begins (0 = immediate)")
+BASE_YEAR = 2024
+xcr_start_calendar = st.sidebar.slider("XCR Start Year", min_value=BASE_YEAR, max_value=BASE_YEAR + 20, value=BASE_YEAR, step=1,
+                                       help=f"Calendar year when XCR system begins ({BASE_YEAR} = immediate)")
+xcr_start_year = xcr_start_calendar - BASE_YEAR
 years_to_full_capacity = st.sidebar.slider("Years to Full Capacity", min_value=1, max_value=20, value=5, step=1,
                                            help="Years for system to ramp from 0% to 100% capacity")
 
@@ -60,6 +62,9 @@ conventional_learning_rate = st.sidebar.slider("Conventional Learning Rate (per 
 scale_full_deployment_gt = st.sidebar.slider("Scale Damping Full-Scale Deployment (Gt)",
                                              min_value=10, max_value=50, value=45, step=5,
                                              help="Lower values scale faster; higher values scale slower")
+max_cdr_capacity = st.sidebar.slider("Maximum CDR Capacity (GtCO2/year)",
+                                     min_value=1, max_value=100, value=40, step=10,
+                                     help="Hard physical cap on annual CDR sequestration")
 damping_steepness = st.sidebar.slider("Sigmoid Damping Slope",
                                       min_value=2.0, max_value=20.0, value=8.0, step=0.5,
                                       help="Steeper values ramp scale/count and CDR learning faster around the midpoint")
@@ -69,7 +74,11 @@ enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
 random_seed = st.sidebar.number_input("Random Seed (0 = random)", min_value=0, max_value=10000, value=42)
 monte_carlo_runs = st.sidebar.slider("Monte Carlo Runs", min_value=1, max_value=20, value=1, step=1,
                                      help="Number of ensemble runs (aggregates results when >1)")
-
+st.sidebar.markdown("---")
+funding_mode = st.sidebar.radio("Funding Mode", ["XCR Market", "Government Funding"], index=0,
+                                 help="XCR: Standard market mechanism; Govt: Direct fiat funding ( deficit spending)")
+sim_funding_mode = "XCR" if funding_mode == "XCR Market" else "GOVT"
+ 
 run_button = st.sidebar.button("Run Simulation", type="primary", width='stretch')
 
 # Initialize session state
@@ -93,13 +102,16 @@ if run_button:
                                      cdr_learning_rate=cdr_learning_rate,
                                      conventional_learning_rate=conventional_learning_rate,
                                      scale_full_deployment_gt=scale_full_deployment_gt,
-                                     damping_steepness=damping_steepness)
+                                     damping_steepness=damping_steepness,
+                                     max_cdr_capacity=max_cdr_capacity,
+                                     funding_mode=sim_funding_mode)
             df_run = sim.run_simulation()
             df_run["run"] = i
             dfs.append(df_run)
             sims.append(sim)
 
         df_all = pd.concat(dfs, ignore_index=True)
+        df_all["Year_Calendar"] = df_all["Year"] + BASE_YEAR
 
         if monte_carlo_runs > 1:
             # Aggregate across runs (mean + 10/90 quantiles for key metrics)
@@ -116,6 +128,7 @@ if run_button:
                            "CDR_seq_mean", "Conv_seq_mean", "AD_seq_mean",
                            "Temp_mean", "Temp_p10", "Temp_p90"]
             agg = agg.reset_index()
+            agg["Year_Calendar"] = agg["Year"] + BASE_YEAR
         else:
             agg = None
 
@@ -203,6 +216,17 @@ if st.session_state.df is not None:
         )
 
     with col8:
+        peak_infl = df_single['Inflation'].max()
+        st.metric(
+            "Peak Inflation",
+            f"{peak_infl*100:.2f}%",
+            delta=f"{(peak_infl - df_single.iloc[-1]['Inflation'])*100:.2f}% above final",
+            delta_color="inverse"
+        )
+
+    col9, col10, col11, col12 = st.columns(4)
+
+    with col9:
         st.metric(
             "CQE Budget",
             f"${df_single.iloc[-1]['CQE_Budget_Total']/1e12:.2f}T",
@@ -235,7 +259,7 @@ if st.session_state.df is not None:
         # BAU CO2 levels (Business As Usual - no intervention)
         fig.add_trace(
             go.Scatter(
-                x=df_tab['Year'],
+                x=df_tab['Year_Calendar'],
                 y=df_tab['BAU_CO2_ppm'],
                 name="BAU (No GCR)",
                 line=dict(color='#7f7f7f', width=2, dash='dot'),
@@ -249,7 +273,7 @@ if st.session_state.df is not None:
         if multi_run and {"CO2_p10", "CO2_p90"}.issubset(df_tab.columns):
             fig.add_trace(
                 go.Scatter(
-                    x=df_tab['Year'],
+                    x=df_tab['Year_Calendar'],
                     y=df_tab['CO2_p90'],
                     name="CO2 90th",
                     line=dict(color='rgba(44,160,44,0.3)', width=0),
@@ -259,7 +283,7 @@ if st.session_state.df is not None:
             )
             fig.add_trace(
                 go.Scatter(
-                    x=df_tab['Year'],
+                    x=df_tab['Year_Calendar'],
                     y=df_tab['CO2_p10'],
                     name="CO2 10-90%",
                     line=dict(color='rgba(44,160,44,0.3)', width=0),
@@ -273,7 +297,7 @@ if st.session_state.df is not None:
             )
         fig.add_trace(
             go.Scatter(
-                x=df_tab['Year'],
+                x=df_tab['Year_Calendar'],
                 y=df_tab['CO2_ppm'],
                 name="With GCR",
                 line=dict(color='#2ca02c', width=3),
@@ -295,7 +319,7 @@ if st.session_state.df is not None:
         # Sequestration by channel (stacked)
         fig.add_trace(
             go.Bar(
-                x=df_tab['Year'],
+                x=df_tab['Year_Calendar'],
                 y=df_tab['CDR_Sequestration_Tonnes'] if not multi_run else df_tab['CDR_seq_mean'],
                 name="CDR",
                 marker_color='#1f77b4',
@@ -305,7 +329,7 @@ if st.session_state.df is not None:
         )
         fig.add_trace(
             go.Bar(
-                x=df_tab['Year'],
+                x=df_tab['Year_Calendar'],
                 y=df_tab['Conventional_Mitigation_Tonnes'] if not multi_run else df_tab['Conv_seq_mean'],
                 name="Conventional",
                 marker_color='#2ca02c',
@@ -315,7 +339,7 @@ if st.session_state.df is not None:
         )
         fig.add_trace(
             go.Bar(
-                x=df_tab['Year'],
+                x=df_tab['Year_Calendar'],
                 y=df_tab['Avoided_Deforestation_Tonnes'] if not multi_run else df_tab['AD_seq_mean'],
                 name="Avoided Deforestation",
                 marker_color='#8c564b',
@@ -327,7 +351,7 @@ if st.session_state.df is not None:
         # Projects operational (secondary axis)
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df_single['Projects_Operational'],
                 name="Operational Projects",
                 line=dict(color='#ff7f0e', width=2, dash='dot'),
@@ -337,7 +361,7 @@ if st.session_state.df is not None:
             secondary_y=True
         )
 
-        fig.update_xaxes(title_text="Year", row=2, col=1)
+        fig.update_xaxes(title_text="Calendar Year", row=2, col=1)
         fig.update_yaxes(title_text="CO2 (ppm)", row=1, col=1, range=[200, None])
         fig.update_yaxes(title_text="Tonnes CO2e/year", row=2, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Project Count", row=2, col=1, secondary_y=True)
@@ -393,42 +417,78 @@ if st.session_state.df is not None:
         fig = make_subplots(
             rows=3, cols=1,
             subplot_titles=(
-                "XCR Total Supply",
-                "XCR Minting & Burning (Annual)",
-                "Cumulative XCR Burned"
+                "System Economics ($USD)",
+                "Economic Activity (Annual)",
+                "Cumulative Impact"
             ),
-            vertical_spacing=0.12
+            vertical_spacing=0.12,
+            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]]
         )
 
-        # Total supply
+        # Labels depend on funding mode
+        is_govt = df['Gov_Debt_USD'].max() > 0
+        supply_label = "Gov Debt (USD)" if is_govt else "Total XCR Supply"
+        supply_col = "Gov_Debt_USD" if is_govt else "XCR_Supply"
+        
+        # Calculate inflation-adjusted USD value (3% discount rate)
+        if is_govt:
+            df['Econ_Value_Adj'] = df['Gov_Debt_USD'] / (1.03 ** df['Year_Calendar'])
+        else:
+            df['Econ_Value_Adj'] = (df['XCR_Supply'] * df['Market_Price']) / (1.03 ** df['Year_Calendar'])
+ 
+        # Primary axis: Supply or Debt
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
-                y=df['XCR_Supply'],
-                name="Total XCR Supply",
+                x=df['Year_Calendar'],
+                y=df[supply_col],
+                name=supply_label,
                 line=dict(color='#1f77b4', width=3),
                 fill='tozeroy',
                 fillcolor='rgba(31, 119, 180, 0.2)'
             ),
-            row=1, col=1
+            row=1, col=1,
+            secondary_y=False
         )
 
-        # Minting (positive - green bars)
         fig.add_trace(
-            go.Bar(
-                x=df['Year'],
-                y=df['XCR_Minted'],
-                name="XCR Minted",
-                marker_color='#2ca02c',
-                opacity=0.7
+            go.Scatter(
+                x=df['Year_Calendar'],
+                y=df['Econ_Value_Adj'],
+                name="Adj Economic Value (USD)",
+                line=dict(color='#ff7f0e', width=2, dash='dot'),
             ),
-            row=2, col=1
+            row=1, col=1,
+            secondary_y=True
         )
+
+        # Economic activity (Minting/Spending)
+        if is_govt:
+            fig.add_trace(
+                go.Bar(
+                    x=df['Year_Calendar'],
+                    y=df['Annual_Gov_Spending'],
+                    name="Annual Gov Spending",
+                    marker_color='#d62728',  # Red for spending/debt
+                    opacity=0.7
+                ),
+                row=2, col=1
+            )
+        else:
+            fig.add_trace(
+                go.Bar(
+                    x=df['Year_Calendar'],
+                    y=df['XCR_Minted'],
+                    name="XCR Minted",
+                    marker_color='#2ca02c',
+                    opacity=0.7
+                ),
+                row=2, col=1
+            )
 
         # Burning (clawbacks - red bars, shown as negative)
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=-df['XCR_Burned_Annual'],  # Negative to show below axis
                 name="XCR Burned (Clawbacks)",
                 marker_color='#d62728',
@@ -437,21 +497,35 @@ if st.session_state.df is not None:
             row=2, col=1
         )
 
-        # Cumulative burned
-        fig.add_trace(
-            go.Scatter(
-                x=df['Year'],
-                y=df['XCR_Burned_Cumulative'],
-                name="Cumulative XCR Burned",
-                line=dict(color='#d62728', width=3),
-                fill='tozeroy',
-                fillcolor='rgba(214, 39, 40, 0.2)'
-            ),
-            row=3, col=1
-        )
+        # Cumulative Impact (Burned or Debt growth)
+        if is_govt:
+             fig.add_trace(
+                go.Scatter(
+                    x=df['Year_Calendar'],
+                    y=df['Gov_Debt_USD'],
+                    name="Cumulative Gov Debt",
+                    line=dict(color='#d62728', width=3),
+                    fill='tozeroy',
+                    fillcolor='rgba(214, 39, 40, 0.2)'
+                ),
+                row=3, col=1
+            )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=df['Year_Calendar'],
+                    y=df['XCR_Burned_Cumulative'],
+                    name="Cumulative XCR Burned",
+                    line=dict(color='#d62728', width=3),
+                    fill='tozeroy',
+                    fillcolor='rgba(214, 39, 40, 0.2)'
+                ),
+                row=3, col=1
+            )
 
-        fig.update_xaxes(title_text="Year", row=3, col=1)
-        fig.update_yaxes(title_text="XCR Supply", row=1, col=1)
+        fig.update_xaxes(title_text="Calendar Year", row=3, col=1)
+        fig.update_yaxes(title_text="XCR Supply", row=1, col=1, secondary_y=False)
+        fig.update_yaxes(title_text="USD Value (3% Adj)", row=1, col=1, secondary_y=True)
         fig.update_yaxes(title_text="XCR (Annual)", row=2, col=1)
         fig.update_yaxes(title_text="XCR Burned", row=3, col=1)
 
@@ -508,7 +582,7 @@ if st.session_state.df is not None:
         # Price floor (area)
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Price_Floor'],
                 name="Price Floor",
                 line=dict(color='#1f77b4', width=2, dash='dash'),
@@ -522,7 +596,7 @@ if st.session_state.df is not None:
         # Market price
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Market_Price'],
                 name="Market Price (USD)",
                 line=dict(color='#2ca02c', width=3),
@@ -534,7 +608,7 @@ if st.session_state.df is not None:
         # Sentiment
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Sentiment'],
                 name="Investor Sentiment",
                 line=dict(color='#ff7f0e', width=2),
@@ -546,7 +620,7 @@ if st.session_state.df is not None:
         # Inflation
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Inflation'] * 100,
                 name="Inflation (%)",
                 line=dict(color='#d62728', width=3),
@@ -573,7 +647,7 @@ if st.session_state.df is not None:
         # Stability Ratio
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Stability_Ratio'],
                 name="Stability Ratio",
                 line=dict(color='#9467bd', width=3),
@@ -601,7 +675,7 @@ if st.session_state.df is not None:
         # CQE budget utilization on secondary axis
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['CQE_Budget_Utilization'],
                 name="CQE Budget Utilization",
                 line=dict(color='#8c564b', width=2, dash='dot'),
@@ -611,7 +685,7 @@ if st.session_state.df is not None:
         )
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=[0.9] * len(df),
                 name="Brake Start (90% cap)",
                 line=dict(color='#8c564b', width=1, dash='dash'),
@@ -624,7 +698,7 @@ if st.session_state.df is not None:
         df['Warning_Int'] = df['CEA_Warning'].astype(int)
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Warning_Int'],
                 name="Warning Status",
                 line=dict(color='red', width=1, dash='dot'),
@@ -638,7 +712,7 @@ if st.session_state.df is not None:
         # System Capacity (Institutional Learning)
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Capacity'],
                 name="System Capacity",
                 line=dict(color='#17becf', width=3),
@@ -665,7 +739,7 @@ if st.session_state.df is not None:
         # Inflows (green bars)
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Capital_Inflow'] / 1e9,  # Convert to billions
                 name="Capital Inflow",
                 marker_color='#2ca02c',
@@ -678,7 +752,7 @@ if st.session_state.df is not None:
         # Outflows (red bars)
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Capital_Outflow'] / 1e9,  # Convert to billions
                 name="Capital Outflow",
                 marker_color='#d62728',
@@ -692,7 +766,7 @@ if st.session_state.df is not None:
         df['Net_Capital_Cumulative'] = df['Capital_Inflow_Cumulative'] - df['Capital_Outflow_Cumulative']
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Net_Capital_Cumulative'] / 1e9,  # Convert to billions
                 name="Net Cumulative Capital",
                 line=dict(color='#1f77b4', width=3),
@@ -704,7 +778,7 @@ if st.session_state.df is not None:
         # Forward guidance (own subplot)
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Forward_Guidance'],
                 name="Forward Guidance (Climate Risk)",
                 line=dict(color='#ff7f0e', width=3),
@@ -716,7 +790,7 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Bar(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['CQE_Spent'] / 1e9,  # trillions to billions
                 name="CQE Spent (USD B)",
                 marker_color='#9467bd',
@@ -726,7 +800,7 @@ if st.session_state.df is not None:
         )
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['XCR_Purchased'] if 'XCR_Purchased' in df.columns else df['CQE_Spent'] / df['Price_Floor'],
                 name="XCR Purchased (approx)",
                 line=dict(color='#8c564b', width=2, dash='dot')
@@ -734,7 +808,7 @@ if st.session_state.df is not None:
             row=7, col=1
         )
 
-        fig.update_xaxes(title_text="Year", row=5, col=1)
+        fig.update_xaxes(title_text="Calendar Year", row=5, col=1)
         fig.update_yaxes(title_text="Price (USD)", row=1, col=1, secondary_y=False)
         fig.update_yaxes(title_text="Sentiment (0-1)", row=1, col=1, secondary_y=True)
         fig.update_yaxes(title_text="Inflation (%)", row=2, col=1)
@@ -772,7 +846,7 @@ if st.session_state.df is not None:
         # Project counts over time
         fig.add_trace(
             go.Scatter(
-                x=df_proj['Year'],
+                x=df_proj['Year_Calendar'],
                 y=df_proj['Projects_Total'],
                 name="Total Projects",
                 line=dict(color='#1f77b4', width=2),
@@ -782,7 +856,7 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df_proj['Year'],
+                x=df_proj['Year_Calendar'],
                 y=df_proj['Projects_Operational'],
                 name="Operational",
                 line=dict(color='#2ca02c', width=2),
@@ -794,7 +868,7 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df_proj['Year'],
+                x=df_proj['Year_Calendar'],
                 y=df_proj['Projects_Development'],
                 name="In Development",
                 line=dict(color='#ff7f0e', width=2, dash='dot'),
@@ -804,7 +878,7 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df_proj['Year'],
+                x=df_proj['Year_Calendar'],
                 y=df_proj['Projects_Failed'],
                 name="Failed",
                 line=dict(color='#d62728', width=2, dash='dash'),
@@ -815,7 +889,7 @@ if st.session_state.df is not None:
         # Sequestration by year (bar chart)
         fig.add_trace(
             go.Bar(
-                x=df_proj['Year'],
+                x=df_proj['Year_Calendar'],
                 y=df_proj['Sequestration_Tonnes'],
                 name="Sequestration",
                 marker_color='#2ca02c',
@@ -863,8 +937,8 @@ if st.session_state.df is not None:
             row=2, col=2
         )
 
-        fig.update_xaxes(title_text="Year", row=1, col=1)
-        fig.update_xaxes(title_text="Year", row=1, col=2)
+        fig.update_xaxes(title_text="Calendar Year", row=1, col=1)
+        fig.update_xaxes(title_text="Calendar Year", row=1, col=2)
         fig.update_yaxes(title_text="Project Count", row=1, col=1)
         fig.update_yaxes(title_text="Tonnes CO2e", row=1, col=2)
 
@@ -902,7 +976,7 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['Active_Countries'],
                 name="Active Countries",
                 line=dict(color='#ff7f0e', width=3),
@@ -914,7 +988,7 @@ if st.session_state.df is not None:
 
         fig.add_trace(
             go.Scatter(
-                x=df['Year'],
+                x=df['Year_Calendar'],
                 y=df['CQE_Budget_Total'] / 1e12,  # Convert to trillions
                 name="CQE Budget",
                 line=dict(color='#2ca02c', width=3),
@@ -924,8 +998,8 @@ if st.session_state.df is not None:
             row=1, col=2
         )
 
-        fig.update_xaxes(title_text="Year", row=1, col=1)
-        fig.update_xaxes(title_text="Year", row=1, col=2)
+        fig.update_xaxes(title_text="Calendar Year", row=1, col=1)
+        fig.update_xaxes(title_text="Calendar Year", row=1, col=2)
         fig.update_yaxes(title_text="Number of Countries", row=1, col=1)
         fig.update_yaxes(title_text="USD Trillions", row=1, col=2)
 
@@ -960,19 +1034,19 @@ if st.session_state.df is not None:
         fig1 = go.Figure()
 
         fig1.add_trace(go.Scatter(
-            x=df['Year'], y=df['CDR_Cost_Per_Tonne'],
+            x=df['Year_Calendar'], y=df['CDR_Cost_Per_Tonne'],
             name='CDR (20% LR)',
             line=dict(color='#d62728', width=3),
             mode='lines'
         ))
         fig1.add_trace(go.Scatter(
-            x=df['Year'], y=df['Conventional_Cost_Per_Tonne'],
+            x=df['Year_Calendar'], y=df['Conventional_Cost_Per_Tonne'],
             name='Conventional (12% LR)',
             line=dict(color='#2ca02c', width=3),
             mode='lines'
         ))
         fig1.update_layout(
-            xaxis_title="Year",
+            xaxis_title="Calendar Year",
             yaxis_title="Cost (USD/tonne CO2)",
             hovermode='x unified',
             height=400
@@ -984,13 +1058,13 @@ if st.session_state.df is not None:
         fig2 = go.Figure()
 
         fig2.add_trace(go.Scatter(
-            x=df['Year'], y=df['CDR_Policy_Multiplier'],
+            x=df['Year_Calendar'], y=df['CDR_Policy_Multiplier'],
             name='CDR',
             line=dict(color='#d62728', width=3),
             mode='lines'
         ))
         fig2.add_trace(go.Scatter(
-            x=df['Year'], y=df['Conventional_Policy_Multiplier'],
+            x=df['Year_Calendar'], y=df['Conventional_Policy_Multiplier'],
             name='Conventional',
             line=dict(color='#2ca02c', width=3),
             mode='lines'
@@ -1005,7 +1079,7 @@ if st.session_state.df is not None:
         fig2.add_vline(x=55, line_dash="dash", line_color="gray", opacity=0.5)
 
         fig2.update_layout(
-            xaxis_title="Year",
+            xaxis_title="Calendar Year",
             yaxis_title="Policy Multiplier (applied to R-value)",
             hovermode='x unified',
             height=400
@@ -1017,14 +1091,14 @@ if st.session_state.df is not None:
         fig3 = go.Figure()
 
         fig3.add_trace(go.Scatter(
-            x=df['Year'], y=df['CDR_Profitability'],
+            x=df['Year_Calendar'], y=df['CDR_Profitability'],
             name='CDR',
             line=dict(color='#d62728', width=3),
             fill='tozeroy',
             mode='lines'
         ))
         fig3.add_trace(go.Scatter(
-            x=df['Year'], y=df['Conventional_Profitability'],
+            x=df['Year_Calendar'], y=df['Conventional_Profitability'],
             name='Conventional',
             line=dict(color='#2ca02c', width=3),
             fill='tozeroy',
@@ -1035,7 +1109,7 @@ if st.session_state.df is not None:
                       annotation_text="Break-even")
 
         fig3.update_layout(
-            xaxis_title="Year",
+            xaxis_title="Calendar Year",
             yaxis_title="Profitability (USD/tonne)",
             hovermode='x unified',
             height=400
@@ -1053,7 +1127,7 @@ if st.session_state.df is not None:
         fig4 = go.Figure()
 
         fig4.add_trace(go.Scatter(
-            x=df['Year'],
+            x=df['Year_Calendar'],
             y=df['Conventional_Capacity_Factor'] * 100,
             name='Capacity Availability',
             line=dict(color='#2ca02c', width=3),
@@ -1071,7 +1145,7 @@ if st.session_state.df is not None:
         )
 
         fig4.update_layout(
-            xaxis_title="Year",
+            xaxis_title="Calendar Year",
             yaxis_title="Capacity Availability (%)",
             yaxis_range=[0, 100],
             hovermode='x unified',
@@ -1102,7 +1176,7 @@ if st.session_state.df is not None:
 
         with col3:
             floor_threshold = df['Conventional_Capacity_Factor'].min() + 1e-6
-            conv_floor_year = df[df['Conventional_Capacity_Factor'] <= floor_threshold].iloc[0]['Year'] if len(df[df['Conventional_Capacity_Factor'] <= floor_threshold]) > 0 else "N/A"
+            conv_floor_year = df[df['Conventional_Capacity_Factor'] <= floor_threshold].iloc[0]['Year_Calendar'] if len(df[df['Conventional_Capacity_Factor'] <= floor_threshold]) > 0 else "N/A"
             st.metric("Conventional Floor Reached", f"Year {conv_floor_year}",
                      delta="Residual availability floor")
 
