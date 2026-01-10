@@ -1577,7 +1577,7 @@ class GCR_ABM_Simulation:
                  cdr_material_capacity_floor: float = 0.25,  # Min capacity when materials exhausted
                  one_time_seed_capital_usd: float = 20e9,  # One-time bootstrap (default $20B)
                  cdr_buildout_stop_year: int = 25,  # Stop NEW CDR project initiation after this year (default 25)
-                 cdr_buildout_stop_on_net_zero: bool = True,  # Also stop buildout when net-zero first achieved
+                 cdr_buildout_stop_on_co2_peak: bool = True,  # Also stop buildout when CO2 peaks (starts declining)
                  funding_mode: str = "XCR",
                  # LLM agent parameters
                  llm_enabled: bool = False,
@@ -1649,9 +1649,10 @@ class GCR_ABM_Simulation:
 
         # CDR buildout stop (prevent overshoot below 350 ppm target)
         self.cdr_buildout_stop_year = cdr_buildout_stop_year
-        self.cdr_buildout_stop_on_net_zero = cdr_buildout_stop_on_net_zero
+        self.cdr_buildout_stop_on_co2_peak = cdr_buildout_stop_on_co2_peak
         self.cdr_buildout_stopped = False  # Track if buildout has been stopped
         self.cdr_buildout_stop_trigger_year = None  # Year when buildout stopped
+        self.co2_history = []  # Track last 3 years of CO2 for peak detection
 
         # Expanded country pool (50 countries with varied characteristics)
         # Format: gdp_tril, base_cqe (as fraction of trillion), tier, region, active, adoption_year
@@ -1822,12 +1823,13 @@ class GCR_ABM_Simulation:
         self.projects_broker.cdr_material_capacity_floor = cdr_material_capacity_floor
         self.auditor = Auditor(error_rate=0.01)
 
-    def should_stop_cdr_buildout(self, year: int) -> bool:
+    def should_stop_cdr_buildout(self, year: int, current_co2: float) -> bool:
         """Determine if NEW CDR project initiation should stop.
 
         Stops when:
         1. Year >= cdr_buildout_stop_year (time-based), OR
-        2. Net-zero achieved (if cdr_buildout_stop_on_net_zero enabled)
+        2. CO2 peaks and starts declining (if cdr_buildout_stop_on_co2_peak enabled)
+           - Requires 2-3 consecutive years of decline to avoid false peaks
 
         Existing operational projects continue running (just opex).
         """
@@ -1841,12 +1843,25 @@ class GCR_ABM_Simulation:
                 self.cdr_buildout_stop_trigger_year = year
             return True
 
-        # Net-zero based stop
-        if self.cdr_buildout_stop_on_net_zero and self.net_zero_ever_reached:
-            if not self.cdr_buildout_stopped:
-                self.cdr_buildout_stopped = True
-                self.cdr_buildout_stop_trigger_year = year
-            return True
+        # CO2 peak-based stop (requires 2-3 consecutive years of decline)
+        if self.cdr_buildout_stop_on_co2_peak:
+            # Track CO2 history (keep last 3 years)
+            self.co2_history.append(current_co2)
+            if len(self.co2_history) > 3:
+                self.co2_history.pop(0)
+
+            # Check for 2-3 consecutive years of decline
+            if len(self.co2_history) >= 3:
+                # All three years show decline: year[i] < year[i-1]
+                decline_year_1 = self.co2_history[1] < self.co2_history[0]
+                decline_year_2 = self.co2_history[2] < self.co2_history[1]
+
+                if decline_year_1 and decline_year_2:
+                    # CO2 has been declining for 2 consecutive years - peak confirmed
+                    if not self.cdr_buildout_stopped:
+                        self.cdr_buildout_stopped = True
+                        self.cdr_buildout_stop_trigger_year = year
+                    return True
 
         return False
 
@@ -2105,7 +2120,7 @@ class GCR_ABM_Simulation:
                     print(f"[Year {year}] NET-ZERO ACHIEVED: Conventional mitigation credits permanently terminated (E:S ratio = {emissions_to_sinks_ratio:.3f})")
 
                 # Check if CDR buildout should stop (prevent overshoot)
-                cdr_buildout_stopped = self.should_stop_cdr_buildout(year)
+                cdr_buildout_stopped = self.should_stop_cdr_buildout(year, self.co2_level)
 
                 self.projects_broker.initiate_projects(
                     available_capital_usd=available_capital_usd,

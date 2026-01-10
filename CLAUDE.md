@@ -290,9 +290,16 @@ venv/bin/python gcr_model.py
 sim = GCR_ABM_Simulation(
     years=100,
     enable_audits=True,
-    price_floor=100.0,      # Initial XCR price floor (USD)
-    inflation_target=0.02,  # 2% baseline (0.001-0.10 range)
-    adoption_rate=3.5       # Countries joining per year
+    price_floor=100.0,                     # Initial XCR price floor (USD)
+    inflation_target=0.02,                 # 2% baseline (0.001-0.10 range)
+    adoption_rate=3.5,                     # Countries joining per year
+    bau_peak_year=6,                       # BAU emissions peak year (default 6 = 2030)
+    one_time_seed_capital_usd=20e9,        # One-time seed capital at market launch ($20B)
+    cdr_material_budget_gt=500.0,          # CDR material budget before scarcity (500 Gt)
+    cdr_material_cost_multiplier=4.0,      # Max cost increase when materials exhausted (4x)
+    cdr_material_capacity_floor=0.25,      # Min capacity when materials exhausted (25%)
+    cdr_buildout_stop_year=25,             # Stop NEW CDR projects after year 25
+    cdr_buildout_stop_on_co2_peak=True     # Also stop buildout when CO2 peaks
 )
 df = sim.run_simulation()
 ```
@@ -333,6 +340,13 @@ venv/bin/streamlit run dashboard.py
 - GCR adoption rate: 0-10 countries/year
 - Enable/disable audits
 - Random seed for reproducibility
+- **BAU Emissions Peak Year**: Calendar year when BAU emissions peak (2024-2044, default 2030)
+- **One-Time Seed Capital**: Initial capital deployed at XCR market launch ($0-$200B, default $20B)
+- **CDR Material Budget**: Total CDR before material scarcity increases costs (100-2000 Gt, default 500 Gt)
+- **CDR Material Cost Multiplier**: Maximum cost increase when materials exhausted (1.0-10.0x, default 4.0x)
+- **CDR Material Capacity Floor**: Minimum project initiation rate when materials exhausted (10-50%, default 25%)
+- **CDR Buildout Stop Year**: Year when NEW CDR project construction stops (10-100, default 25)
+- **Stop CDR Buildout at CO2 Peak**: Also stop NEW CDR projects when atmospheric CO2 peaks and starts declining (checkbox, default True)
 - CDR learning rate (per doubling)
 - Conventional learning rate (per doubling)
 - Scale damping full‑scale deployment (Gt)
@@ -363,8 +377,14 @@ Located in `GCR_ABM_Simulation.__init__()` (gcr_model.py:380):
 - **CEA Brake**: Thresholds 8:1 / 10:1 / 12:1 / 15:1 (inflation‑adjusted)
 - **CQE Budget**: 5% of annual private capital inflow, capped at 0.5% of active GDP
 - **Price Floor Revisions**: Every 5 years based on roadmap progress, inflation, and temperature
-- **BAU Emissions Flow**: 40 GtCO2/year, peak around year 6, plateau, then slow late‑century decline (~0.2%/yr)
-- **Capacity Limits**: Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr; CDR has no hard cap
+- **BAU Emissions Flow**: 40 GtCO2/year at year 0, grows 1%/year until peak (configurable via `bau_peak_year` parameter, default year 6), plateau to year 60, then slow late‑century decline (~0.2%/yr)
+- **One-Time Seed Capital**: `one_time_seed_capital_usd` (default $20B, configurable $0-$200B) - deployed ONCE at XCR market launch to bootstrap initial supply
+- **CDR Material Budget**: `cdr_material_budget_gt` (default 500 Gt, configurable 100-2000 Gt) - total CDR before material scarcity increases costs
+- **CDR Material Cost Multiplier**: `cdr_material_cost_multiplier` (default 4.0x, configurable 1.0-10.0x) - maximum cost increase when materials exhausted
+- **CDR Material Capacity Floor**: `cdr_material_capacity_floor` (default 0.25, configurable 0.10-0.50) - minimum project initiation rate when materials exhausted
+- **CDR Buildout Stop Year**: `cdr_buildout_stop_year` (default 25, configurable 10-100) - stop NEW CDR project initiation after this year
+- **CDR Buildout Stop on CO2 Peak**: `cdr_buildout_stop_on_co2_peak` (default True) - also stop NEW CDR projects when atmospheric CO2 peaks and starts declining
+- **Capacity Limits**: Conventional 30 Gt/yr, Avoided Deforestation 5 Gt/yr; CDR 20 Gt/yr (material-constrained)
 - **Auditor Error Rate**: 1% (Class 3 operational risk)
 - **Chaos Monkey**: 5% chance per year of 0.5-1.5% inflation shock (only after GCR start)
 
@@ -462,6 +482,8 @@ Active_Countries, CQE_Budget_Total, Capacity
 - `CDR_R_Base`, `CDR_R_Effective`, `Conventional_R_Base`, `Conventional_R_Effective`
 - `CDR_Profitability`, `Conventional_Profitability`
 - `Conventional_Capacity_Utilization`, `Conventional_Capacity_Available`, `Conventional_Capacity_Factor`
+- `CDR_Material_Utilization`, `CDR_Material_Cost_Factor`, `CDR_Material_Capacity_Factor` (Feature 3: material constraints)
+- `CDR_Buildout_Stopped`, `CDR_Buildout_Stop_Year` (Feature 4: buildout stop)
 
 All transparency columns are exported to CSV and visible in the dashboard tabs.
 
@@ -478,7 +500,7 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - **Sigmoid damping sharpness** (k=12.0 in CentralBankAlliance): Controls how aggressively banks brake during inflation
 - **Sentiment dynamics** (InvestorMarket): 3% decay on new warnings, 0.5% on persistent warnings; inflation decay 6%/3%/0.5% at 3x/2x/1.5x target; recovery is 2% of gap plus CO2/forward-guidance bonuses
 - **Inflation correction**: 25-40% rate toward 2% target each year
-- **Seed capital** (CapitalMarket): `seed_capital_usd` ($20B) and `seed_market_cap_usd` ($50B) bootstrap early project formation when XCR supply is small
+- **One-time seed capital** (CapitalMarket): `one_time_seed_capital` ($20B default, configurable $0-$200B) deploys ONCE at XCR market launch (year 3) to bootstrap initial XCR supply. After seed deployment, private capital flows sustain the market based on sentiment.
 - **Capital demand neutrality**: Starts around ~0.6 and ramps down to ~0.3 over ~10 years after XCR start (net inflows once `combined_attractiveness` exceeds the current threshold)
 - **Project failure rates**: 2% annual stochastic decay
 - **Clawback severity**: Currently 50% of lifetime XCR burned on audit failure
@@ -523,6 +545,23 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - **Effect**: Early conventional is cheap ($18-25/tonne), rises to $50+/tonne as budget depletes
 - **Crossover**: CDR becomes cost-competitive when conventional budget ~80-100% utilized
 
+**CDR Material Constraints** ("material scarcity" mechanics):
+- **Budget**: `cdr_material_budget_gt` (default 500 Gt, configurable 100-2000 Gt) - total "easy" CDR before material scarcity (limestone, energy, water, steel) increases costs
+- **Cost multiplier**: `cdr_material_cost_multiplier` (default 4.0x, configurable 1.0-10.0x) - maximum cost increase when materials exhausted
+- **Capacity floor**: `cdr_material_capacity_floor` (default 25%, configurable 10-50%) - minimum project initiation rate when materials exhausted
+- **Sigmoid transition**: Centered at 60% utilization, costs/capacity degrade sharply 60-100%
+- **Effect**: Early CDR benefits from learning curves (costs fall), but material scarcity eventually dominates (costs rise)
+- **Buildout phase only**: Material inflation applies during NEW project construction. Once operational, projects only face opex costs (energy)
+- **Interaction with learning**: At low deployment (0-300 Gt), learning dominates. At high deployment (300-500 Gt), material scarcity dominates.
+
+**CDR Buildout Stop** ("prevent overshoot" mechanics):
+- **Time-based stop**: `cdr_buildout_stop_year` (default 25 years, configurable 10-100) - stop NEW CDR project initiation after this year
+- **CO2 peak-based stop**: `cdr_buildout_stop_on_co2_peak` (default True) - also stop NEW CDR projects when atmospheric CO2 concentration peaks and starts declining (2-3 consecutive years of decline)
+- **Whichever comes first**: If CO2 peaks at year 20 and buildout stop at year 25, buildout stops at year 20
+- **Existing projects continue**: Operational CDR projects keep running (opex only - energy costs), maintaining current removal capacity
+- **Effect**: Prevents CO2 overshoot below 350 ppm target by freezing CDR capacity once measurable drawdown is achieved
+- **Rationale**: Net-zero is when CDR really gets started (emissions balanced). CO2 peak proves we have enough CDR capacity for measurable atmospheric drawdown. Continued expansion would cause excessive removal below target.
+
 ### Understanding R-Value Mechanics
 - When modifying project economics, remember: Higher R_effective = more XCR per tonne
 - Project initiation gate uses: `(market_price * brake_factor) >= marginal_cost`
@@ -554,6 +593,27 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - If the transition feels too abrupt: Lower `conventional_budget_cost_multiplier` or raise capacity floor
 - If costs drop unrealistically fast: Reduce learning rates or increase the depletion coefficient (0.15 in the log scaling)
 - If costs don't drop enough: Increase learning rates, ensure projects are deploying (check profitability), reduce resource depletion
+
+**CDR Material Constraint Issues** (NEW - Feature 3):
+- If CDR costs rise too quickly: Increase `cdr_material_budget_gt` (default 500 Gt), reduce `cdr_material_cost_multiplier` (default 4.0x)
+- If CDR costs never rise: Check `CDR_Material_Utilization` column - ensure cumulative deployment exceeds 60% of budget
+- If material constraints too restrictive: Increase `cdr_material_capacity_floor` (default 25%), or increase budget
+- If material constraints too lenient: Decrease budget or increase cost multiplier to force earlier constraint binding
+- To test material inflation: Run scenarios with tight budget (250 Gt) vs generous (1000 Gt) and compare CDR deployment curves
+
+**CDR Buildout Stop Issues** (NEW - Feature 4):
+- If CO2 overshoots below 350 ppm: Reduce `cdr_buildout_stop_year` (default 25) to stop buildout earlier, or ensure `cdr_buildout_stop_on_co2_peak` is enabled (default True)
+- If CO2 never reaches 350 ppm: Increase buildout stop year (50-100) to allow more CDR capacity, or disable CO2 peak-based stop
+- If buildout stops too early: Check `CDR_Buildout_Stop_Year` column to see when stop triggered, adjust year or disable CO2 peak trigger
+- If existing CDR projects insufficient: Buildout stop only prevents NEW projects - existing projects continue. May need to increase project scale or reduce costs to deploy more capacity before stop triggers
+- To test overshoot prevention: Run 100-year scenario with default settings, verify CO2 peaks (starts declining), buildout stops, and CO2 stabilizes near 350 ppm without excessive overshoot
+- **Important**: CO2 peak detection requires 2 consecutive years of decline to avoid false peaks from noise
+
+**BAU Emissions Trajectory Issues** (NEW - Feature 2):
+- If emissions peak too early/late: Adjust `bau_peak_year` parameter (default 6 = 2030)
+- Early peak (year 3-5): Models aggressive near-term climate action, higher initial emissions baseline
+- Late peak (year 10-15): Models delayed action, continued emissions growth
+- Peak timing affects forward guidance and project urgency in early years
 
 **Debugging Technology Dynamics**:
 - Check Technology Economics dashboard tab to visualize cost curves, capacity taper, and profitability

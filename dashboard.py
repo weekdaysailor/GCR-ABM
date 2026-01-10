@@ -115,10 +115,10 @@ cdr_buildout_stop_year = st.sidebar.slider(
     min_value=10, max_value=100, value=25, step=5,
     help="Year when NEW CDR project construction stops (existing projects continue operating)"
 )
-cdr_buildout_stop_on_net_zero = st.sidebar.checkbox(
-    "Stop CDR Buildout at Net-Zero",
+cdr_buildout_stop_on_co2_peak = st.sidebar.checkbox(
+    "Stop CDR Buildout at CO2 Peak",
     value=True,
-    help="Also stop NEW CDR projects when net-zero is first achieved (whichever comes first)"
+    help="Also stop NEW CDR projects when atmospheric CO2 peaks and starts declining (whichever comes first)"
 )
 
 st.sidebar.markdown("---")
@@ -164,7 +164,7 @@ if run_button:
                                          cdr_material_capacity_floor=cdr_material_capacity_floor,
                                          one_time_seed_capital_usd=one_time_seed_capital_usd,
                                          cdr_buildout_stop_year=cdr_buildout_stop_year,
-                                         cdr_buildout_stop_on_net_zero=cdr_buildout_stop_on_net_zero,
+                                         cdr_buildout_stop_on_co2_peak=cdr_buildout_stop_on_co2_peak,
                                          funding_mode=mode)
                 df_run = sim.run_simulation()
                 df_run["run"] = i
