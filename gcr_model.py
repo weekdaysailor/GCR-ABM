@@ -981,7 +981,8 @@ class ProjectsBroker:
                           residual_emissions_gt: Optional[float] = None,
                           residual_luc_emissions_gt: Optional[float] = None,
                           emissions_to_sinks_ratio: float = 10.0,
-                          net_zero_ever_reached: bool = False):
+                          net_zero_ever_reached: bool = False,
+                          cdr_buildout_stopped: bool = False):
         # Store emissions_to_sinks_ratio for cost calculation
         self.current_emissions_to_sinks_ratio = emissions_to_sinks_ratio
         """Initiate new projects where economics are favorable
@@ -1023,6 +1024,13 @@ class ProjectsBroker:
                     # Approaching net-zero: ramp down CM initiation
                     # Ratio 2.0 → 1.0 maps to factor 1.0 → 0.0
                     net_zero_ramp_factor = (emissions_to_sinks_ratio - 1.0)
+
+            # CDR buildout stop (prevent overshoot below 350 ppm target)
+            # NEW CDR projects stop, but existing projects continue operating (opex only)
+            if channel == ChannelType.CDR and cdr_buildout_stopped:
+                # Skip NEW CDR project initiation
+                # Existing operational CDR projects continue (already in self.projects list)
+                continue
 
             # Check channel capacity limits (Gt/year)
             planned_rate_gt = self.get_planned_sequestration_rate(channel)
@@ -1350,13 +1358,14 @@ class CapitalMarket:
     3. Return potential (price appreciation)
     """
 
-    def __init__(self, initial_co2: float = 420.0, target_co2: float = 350.0):
+    def __init__(self, initial_co2: float = 420.0, target_co2: float = 350.0,
+                 one_time_seed_capital: float = 20e9):
         self.initial_co2 = initial_co2
         self.target_co2 = target_co2
         self.cumulative_capital_inflow = 0.0  # Total capital deployed (USD)
         self.cumulative_capital_outflow = 0.0  # Total capital withdrawn (USD)
-        self.seed_capital_usd = 2e10  # Bootstrap inflow for early-stage market formation
-        self.seed_market_cap_usd = 5e10  # Seed applies while market cap is small
+        self.one_time_seed_capital = one_time_seed_capital
+        self.seed_capital_deployed = False  # Track if seed has been used
         self.neutrality_start = 0.6  # Higher hurdle for new markets
         self.neutrality_end = 0.3  # More optimistic after market matures
         self.neutrality_ramp_years = 10  # Years to reach optimistic neutrality
@@ -1456,11 +1465,11 @@ class CapitalMarket:
         neutrality = self._neutrality_threshold(market_age_years)
         net_capital_flow = market_cap * base_turnover_rate * (combined_attractiveness - neutrality) * 2
 
-        # Seed capital for early market formation (pre-liquidity bootstrap)
-        seed_inflow = 0.0
-        if observed_market_cap < self.seed_market_cap_usd:
-            seed_inflow = self.seed_capital_usd * max(0.2, forward_guidance)
-            net_capital_flow = max(net_capital_flow, seed_inflow)
+        # One-time seed capital at market inception (first active year only)
+        if not self.seed_capital_deployed and self.one_time_seed_capital > 0:
+            self.seed_capital_deployed = True
+            # Seed buys XCR at floor price, creating initial supply
+            return self.one_time_seed_capital
 
         return net_capital_flow
 
@@ -1566,6 +1575,9 @@ class GCR_ABM_Simulation:
                  cdr_material_budget_gt: float = 500.0,  # Total "easy" CDR before material constraints bind
                  cdr_material_cost_multiplier: float = 4.0,  # Max cost increase when materials exhausted
                  cdr_material_capacity_floor: float = 0.25,  # Min capacity when materials exhausted
+                 one_time_seed_capital_usd: float = 20e9,  # One-time bootstrap (default $20B)
+                 cdr_buildout_stop_year: int = 25,  # Stop NEW CDR project initiation after this year (default 25)
+                 cdr_buildout_stop_on_net_zero: bool = True,  # Also stop buildout when net-zero first achieved
                  funding_mode: str = "XCR",
                  # LLM agent parameters
                  llm_enabled: bool = False,
@@ -1634,6 +1646,12 @@ class GCR_ABM_Simulation:
         self.bau_decline_start_year = 60  # Late-century population decline begins
         self.bau_post_peak_plateau_rate = 0.0  # Flat emissions until population decline
         self.bau_decline_rate_post_peak = -0.002  # 0.2% annual decline after population decline begins
+
+        # CDR buildout stop (prevent overshoot below 350 ppm target)
+        self.cdr_buildout_stop_year = cdr_buildout_stop_year
+        self.cdr_buildout_stop_on_net_zero = cdr_buildout_stop_on_net_zero
+        self.cdr_buildout_stopped = False  # Track if buildout has been stopped
+        self.cdr_buildout_stop_trigger_year = None  # Year when buildout stopped
 
         # Expanded country pool (50 countries with varied characteristics)
         # Format: gdp_tril, base_cqe (as fraction of trillion), tier, region, active, adoption_year
@@ -1774,13 +1792,21 @@ class GCR_ABM_Simulation:
                     llm_engine=self.llm_engine
                 )
             else:
-                self.capital_market = CapitalMarket(initial_co2=420.0, target_co2=350.0)
+                self.capital_market = CapitalMarket(
+                initial_co2=420.0,
+                target_co2=350.0,
+                one_time_seed_capital=one_time_seed_capital_usd
+            )
         else:
             # Rule-based agents (default)
             self.cea = CEA(target_co2_ppm=350.0, initial_co2_ppm=420.0, inflation_target=self.inflation_target)
             self.central_bank = CentralBankAlliance(self.countries, price_floor=price_floor)
             self.investor_market = InvestorMarket(price_floor=price_floor)
-            self.capital_market = CapitalMarket(initial_co2=420.0, target_co2=350.0)
+            self.capital_market = CapitalMarket(
+                initial_co2=420.0,
+                target_co2=350.0,
+                one_time_seed_capital=one_time_seed_capital_usd
+            )
 
         # ProjectsBroker and Auditor always rule-based
         self.projects_broker = ProjectsBroker(self.countries)
@@ -1795,6 +1821,34 @@ class GCR_ABM_Simulation:
         self.projects_broker.cdr_material_cost_multiplier = cdr_material_cost_multiplier
         self.projects_broker.cdr_material_capacity_floor = cdr_material_capacity_floor
         self.auditor = Auditor(error_rate=0.01)
+
+    def should_stop_cdr_buildout(self, year: int) -> bool:
+        """Determine if NEW CDR project initiation should stop.
+
+        Stops when:
+        1. Year >= cdr_buildout_stop_year (time-based), OR
+        2. Net-zero achieved (if cdr_buildout_stop_on_net_zero enabled)
+
+        Existing operational projects continue running (just opex).
+        """
+        if self.cdr_buildout_stopped:
+            return True
+
+        # Time-based stop
+        if year >= self.cdr_buildout_stop_year:
+            if not self.cdr_buildout_stopped:
+                self.cdr_buildout_stopped = True
+                self.cdr_buildout_stop_trigger_year = year
+            return True
+
+        # Net-zero based stop
+        if self.cdr_buildout_stop_on_net_zero and self.net_zero_ever_reached:
+            if not self.cdr_buildout_stopped:
+                self.cdr_buildout_stopped = True
+                self.cdr_buildout_stop_trigger_year = year
+            return True
+
+        return False
 
     def chaos_monkey(self):
         """Inject stochastic economic shocks
@@ -2049,7 +2103,10 @@ class GCR_ABM_Simulation:
                 if emissions_to_sinks_ratio <= 1.0 and not self.net_zero_ever_reached:
                     self.net_zero_ever_reached = True
                     print(f"[Year {year}] NET-ZERO ACHIEVED: Conventional mitigation credits permanently terminated (E:S ratio = {emissions_to_sinks_ratio:.3f})")
- 
+
+                # Check if CDR buildout should stop (prevent overshoot)
+                cdr_buildout_stopped = self.should_stop_cdr_buildout(year)
+
                 self.projects_broker.initiate_projects(
                     available_capital_usd=available_capital_usd,
                     market_price_xcr=1000.0 if gov_funding_active else self.investor_market.market_price_xcr,
@@ -2060,6 +2117,7 @@ class GCR_ABM_Simulation:
                     current_inflation=self.global_inflation,
                     emissions_to_sinks_ratio=emissions_to_sinks_ratio,
                     net_zero_ever_reached=self.net_zero_ever_reached,
+                    cdr_buildout_stopped=cdr_buildout_stopped,
                     cea=self.cea,
                     residual_emissions_gt=remaining_conventional_need_gt,
                     residual_luc_emissions_gt=land_use_change_gtco2
@@ -2433,6 +2491,10 @@ class GCR_ABM_Simulation:
                 "CDR_Material_Utilization": self.projects_broker.get_cdr_material_utilization(),
                 "CDR_Material_Cost_Factor": self.projects_broker.get_cdr_material_cost_factor(),
                 "CDR_Material_Capacity_Factor": self.projects_broker.get_cdr_material_capacity_factor(),
+
+                # NEW: CDR buildout controls
+                "CDR_Buildout_Stopped": self.cdr_buildout_stopped,
+                "CDR_Buildout_Stop_Year": self.cdr_buildout_stop_trigger_year if self.cdr_buildout_stop_trigger_year else 0,
 
                 # NEW: Capital market flows (private investor demand)
                 "Net_Capital_Flow": net_capital_flow,

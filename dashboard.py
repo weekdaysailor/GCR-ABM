@@ -58,6 +58,15 @@ bau_peak_calendar_year = st.sidebar.slider(
 bau_peak_year = bau_peak_calendar_year - BASE_YEAR
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("Capital Market Bootstrap")
+one_time_seed_capital = st.sidebar.slider(
+    "One-Time Seed Capital (USD billions)",
+    min_value=0, max_value=200, value=20, step=10,
+    help="Initial capital deployed at XCR market launch (one-time, not annual)"
+)
+one_time_seed_capital_usd = one_time_seed_capital * 1e9
+
+st.sidebar.markdown("---")
 st.sidebar.subheader("XCR System Ramping")
 xcr_start_calendar = st.sidebar.slider("XCR Start Year", min_value=BASE_YEAR, max_value=BASE_YEAR + 20, value=BASE_YEAR + 3, step=1,
                                        help=f"Calendar year when XCR system begins ({BASE_YEAR} = immediate)")
@@ -97,6 +106,19 @@ cdr_material_capacity_floor = st.sidebar.slider(
     "CDR Material Capacity Floor",
     min_value=0.1, max_value=0.5, value=0.25, step=0.05,
     help="Minimum project initiation rate when materials exhausted (0.25 = 25%)"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("CDR Buildout Controls")
+cdr_buildout_stop_year = st.sidebar.slider(
+    "CDR Buildout Stop Year",
+    min_value=10, max_value=100, value=25, step=5,
+    help="Year when NEW CDR project construction stops (existing projects continue operating)"
+)
+cdr_buildout_stop_on_net_zero = st.sidebar.checkbox(
+    "Stop CDR Buildout at Net-Zero",
+    value=True,
+    help="Also stop NEW CDR projects when net-zero is first achieved (whichever comes first)"
 )
 
 st.sidebar.markdown("---")
@@ -140,6 +162,9 @@ if run_button:
                                          cdr_material_budget_gt=cdr_material_budget_gt,
                                          cdr_material_cost_multiplier=cdr_material_cost_multiplier,
                                          cdr_material_capacity_floor=cdr_material_capacity_floor,
+                                         one_time_seed_capital_usd=one_time_seed_capital_usd,
+                                         cdr_buildout_stop_year=cdr_buildout_stop_year,
+                                         cdr_buildout_stop_on_net_zero=cdr_buildout_stop_on_net_zero,
                                          funding_mode=mode)
                 df_run = sim.run_simulation()
                 df_run["run"] = i
