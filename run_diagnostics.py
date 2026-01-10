@@ -13,6 +13,7 @@ print(f"Final Count Operational Projects: {df.iloc[-1]['Projects_Operational']}"
 print(f"Total Projects Created: {df.iloc[-1]['Projects_Total']}")
 print(f"Final Human Emissions (GtCO2): {df.iloc[-1]['Human_Emissions_GtCO2']:.2f}")
 print(f"Final CDR Sequestration (GtCO2): {df.iloc[-1]['CDR_Sequestration_Tonnes'] / 1e9:.2f}")
+print(f"Final Conventional Mitigation (GtCO2): {df.iloc[-1]['Conventional_Mitigation_Tonnes'] / 1e9:.2f}")
 
 # Check first 10 years of project creation
 print("\n--- FIRST 10 YEARS PROJECT CREATION ---")

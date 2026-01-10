@@ -83,7 +83,8 @@ run_button = st.sidebar.button("Run Simulation", type="primary", width='stretch'
 # Initialize session state
 if 'df' not in st.session_state:
     st.session_state.df = None
-    st.session_state.sim = None
+    st.session_state.sim_xcr = None
+    st.session_state.sim_govt = None
     st.session_state.agg = None
 
 # Run simulation
@@ -110,6 +111,13 @@ if run_button:
                 df_run["run"] = i
                 df_run["Scenario"] = "XCR Market" if mode == "XCR" else "Govt Funding"
                 dfs.append(df_run)
+                
+                # Store first run for detailed viewing
+                if i == 0:
+                    if mode == "XCR":
+                        st.session_state.sim_xcr = sim
+                    else:
+                        st.session_state.sim_govt = sim
 
             df_mode = pd.concat(dfs, ignore_index=True)
             df_mode["Year_Calendar"] = df_mode["Year"] + BASE_YEAR
@@ -263,6 +271,13 @@ if st.session_state.df is not None:
         df_single = df_all[(df_all["Scenario"] == selected_scenario) & (df_all["run"] == 0)]
         df_climate = agg[agg["Scenario"] == selected_scenario] if multi_run else df_single
         df = df_single  # Ensure df is defined for all sub-tabs
+        
+        # Select matching simulation object for details
+        sim = st.session_state.sim_xcr if selected_scenario == "XCR Market" else st.session_state.sim_govt
+        
+        if sim is None:
+            st.warning("Simulation data for this scenario is missing. Please run the simulation again.")
+            st.stop()
 
         if multi_run:
             df_climate = df_climate.copy()
@@ -683,8 +698,8 @@ if st.session_state.df is not None:
             )
 
             # Calculate Stability Ratio
-            cqe_budget = sim.central_bank.total_cqe_budget
-            df['Stability_Ratio'] = (df['XCR_Supply'] * df['Market_Price']) / cqe_budget
+            # Use dataframe column instead of sim object for robustness
+            df['Stability_Ratio'] = (df['XCR_Supply'] * df['Market_Price']) / df['CQE_Budget_Total']
 
             # Stability Ratio
             fig.add_trace(

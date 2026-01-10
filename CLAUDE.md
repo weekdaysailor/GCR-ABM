@@ -559,3 +559,9 @@ All transparency columns are exported to CSV and visible in the dashboard tabs.
 - Check Technology Economics dashboard tab to visualize cost curves, capacity taper, and profitability
 - Export DataFrame and examine transparency columns (costs, cumulative deployment, R-values, profitability)
 - Verify conventional capacity reaches the intended frontier year (check `Conventional_Capacity_Utilization` and `Conventional_Capacity_Factor`)
+
+## Future Roadmap
+
+- **Detailed Mitigation Breakout**: Split physical mitigation channels into specific technology types (e.g., DAC vs. BECCS, Wind vs. Solar) to better account for resource utilization, land-use competition, and energy system constraints.
+- **Regional Climate Impacts**: Incorporate regional climate vulnerabilities into project failure rates and country participation incentives.
+- **Non-CO2 Greenhouse Gases**: Expand the model to include Methane (CH4) and Nitrous Oxide (N2O) with appropriate GWP-100 characterization.

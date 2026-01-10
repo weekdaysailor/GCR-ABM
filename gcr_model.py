@@ -1836,28 +1836,22 @@ class GCR_ABM_Simulation:
 
             gov_funding_active = self.funding_mode == "GOVT"
             
-            # Government Inflation Brake logic (update peak and calculate factor)
+            # Global Fiscal Brake for GOVT scenario (Sigmoid-based)
             gov_inflation_brake_factor = 1.0
             if gov_funding_active:
-                target = self.inflation_target
-                # 90% threshold (e.g., 1.8% for 2% target)
-                if self.global_inflation >= 0.9 * target:
-                    self.gov_brake_active_years += 1
-                    
-                    if self.global_inflation >= 1.5 * target:
-                        gov_inflation_brake_factor = 0.05  # EMERGENCY STOP
-                    elif self.global_inflation >= target:
-                        if self.global_inflation > self.prev_global_inflation:
-                            gov_inflation_brake_factor = 0.1  # HARD BRAKE ON CLIMB
-                        else:
-                            gov_inflation_brake_factor = 0.4  # MAINTAIN SUPPRESSION
-                    else:
-                        # Between 90% and 100% of target
-                        gov_inflation_brake_factor = 0.8
-                else:
-                    self.gov_brake_active_years = 0
+                # Sigmoid damping: willingness decreases as inflation rises above target
+                # Center at 1.5x target, sharpness k=12 (mimicking XCR Central Bank)
+                k_brake = 12.0
+                brake_center = self.inflation_target * 1.5
+                
+                # Calculate sigmoid willingness (brake factor)
+                # 1.0 at target, ~0.5 at 1.5x target, ~0.0 at 2.0x target
+                gov_inflation_brake_factor = 1.0 / (1.0 + np.exp(k_brake * (self.global_inflation - brake_center)))
+                
+                # Safety clip: allow tiny bit of maintenance but can effectively hit 0.0
+                gov_inflation_brake_factor = float(np.clip(gov_inflation_brake_factor, 0.001, 1.0))
 
-                # Update prev_inflation for next year's climb detection
+                # Update prev_inflation for logging/diagnostics (though not used fortiered logic anymore)
                 self.prev_global_inflation = self.global_inflation
 
             # 0. Get capacity multiplier for this year (institutional learning)
@@ -2048,48 +2042,53 @@ class GCR_ABM_Simulation:
 
                     credited_tonnes = 0.0
                     if audit_passed:
+                        # Apply GOVT fiscal brake to physical sequestration if active
+                        effective_sequestration = project.annual_sequestration_tonnes
+                        if gov_funding_active:
+                            effective_sequestration *= gov_inflation_brake_factor
+
                         if project.channel == ChannelType.CDR:
                             # CDR continues earning XCR post-net-zero (active removal)
-                            credited_tonnes = project.annual_sequestration_tonnes
+                            credited_tonnes = effective_sequestration
                         elif project.channel == ChannelType.CONVENTIONAL:
                             # CM credits terminate permanently once net-zero achieved
                             if self.net_zero_ever_reached:
                                 credited_tonnes = 0.0  # Net-zero reached, CM job done (permanent)
                             else:
                                 # Credit annually, capped by annual BAU emissions
-                                credit = min(project.annual_sequestration_tonnes, remaining_conventional_tonnes)
+                                credit = min(effective_sequestration, remaining_conventional_tonnes)
                                 credited_tonnes = credit
                                 if credit > 0:
                                     remaining_conventional_tonnes -= credit
                         elif project.channel == ChannelType.AVOIDED_DEFORESTATION:
                             # Avoided deforestation continues post-net-zero (stores carbon in biomass)
-                            credit = min(project.annual_sequestration_tonnes, remaining_luc_tonnes)
+                            credit = min(effective_sequestration, remaining_luc_tonnes)
                             credited_tonnes = credit
                             remaining_luc_tonnes -= credit
                             avoided_deforestation_tonnes += credit
 
                         xcr_change_raw = credited_tonnes * project.r_value
 
-                    xcr_change_adjusted = xcr_change_raw * capacity * brake_factor
+                        xcr_change_adjusted = xcr_change_raw * capacity * brake_factor
 
-                    if audit_passed and xcr_change_raw > 0:
-                        # Successful verification - SEQUESTRATION COUNTED
-                        total_sequestration += credited_tonnes
-                        project.total_sequestered_tonnes += credited_tonnes
+                        if audit_passed and credited_tonnes > 0:
+                            # Successful verification - SEQUESTRATION COUNTED
+                            total_sequestration += credited_tonnes
+                            project.total_sequestered_tonnes += credited_tonnes
 
-                        # Update cumulative deployment for learning curves
-                        self.projects_broker.update_cumulative_deployment(
-                            project.channel,
-                            credited_tonnes
-                        )
+                            # Update cumulative deployment for learning curves
+                            self.projects_broker.update_cumulative_deployment(
+                                project.channel,
+                                credited_tonnes
+                            )
 
-                        if project.channel == ChannelType.CDR:
-                            cdr_sequestration += credited_tonnes
-                            cdr_sequestration_tonnes += credited_tonnes
-                        elif project.channel == ChannelType.CONVENTIONAL:
-                            conventional_mitigation += credited_tonnes
-                            conv_sequestration_tonnes += credited_tonnes
-
+                            if project.channel == ChannelType.CDR:
+                                cdr_sequestration += credited_tonnes
+                                cdr_sequestration_tonnes += credited_tonnes
+                            elif project.channel == ChannelType.CONVENTIONAL:
+                                conventional_mitigation += credited_tonnes
+                                conv_sequestration_tonnes += credited_tonnes
+                        
                         if not gov_funding_active:
                             # MINT XCR (hold back a co-benefit pool slice)
                             brake_factor = self.cea.brake_factor
@@ -2128,9 +2127,11 @@ class GCR_ABM_Simulation:
             if gov_funding_active:
                 # In GOVT mode, total cost is the annual spending for CDR and Avoided Deforestation
                 # Conventional Mitigation costs are assumed covered by existing markets (Cap & Trade, CBAM)
+                # Apply Global Fiscal Brake to the operational costs
                 annual_gov_spending = self.projects_broker.get_total_operational_cost(
                     exclude_channels=[ChannelType.CONVENTIONAL]
-                )
+                ) * gov_inflation_brake_factor
+                
                 self.total_gov_debt += annual_gov_spending
                 
                 # Direct inflation impact from deficit spending

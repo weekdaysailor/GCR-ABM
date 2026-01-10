@@ -73,3 +73,4 @@ This model is a simplified, global, yearly simulation. The notes below describe 
 - Non‑CO2 greenhouse gases.
 - Detailed energy system or supply‑chain constraints.
 - Sector‑level mitigation pathways (future version should split by sectors).
+- Breakout of mitigations by specific type/resource (e.g., land vs. energy vs. direct capture) to better account for cross-sector resource utilization and competition.
