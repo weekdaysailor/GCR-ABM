@@ -512,6 +512,12 @@ class ProjectsBroker:
         self.conventional_budget_cost_multiplier = 8.0  # Max cost multiplier when budget exhausted (increased from 4.0)
         self.conventional_budget_capacity_floor = 0.10  # Min capacity factor when budget exhausted
 
+        # CDR material intensity constraints (similar to conventional budget depletion)
+        # Models material scarcity (limestone, energy, water, steel) as CDR scales
+        self.cdr_material_budget_gt = 500.0  # Lower than conventional (1000 Gt) - CDR is newer tech
+        self.cdr_material_cost_multiplier = 4.0  # Max cost multiplier when materials exhausted
+        self.cdr_material_capacity_floor = 0.25  # Higher floor than conventional (0.10) - CDR has alternatives
+
         # Maximum annual sequestration capacity by channel (Gt/year)
         # Represents physical/technological limits on deployment scale
         self.max_capacity_gt_per_year = {
@@ -635,6 +641,10 @@ class ProjectsBroker:
         if channel == ChannelType.CONVENTIONAL:
             budget_depletion_factor = self.get_conventional_budget_cost_factor()
             net_zero_proximity_factor = self.get_net_zero_proximity_cost_multiplier()
+        elif channel == ChannelType.CDR:
+            # CDR material intensity constraints (limestone, energy, water, steel)
+            budget_depletion_factor = self.get_cdr_material_cost_factor()
+            net_zero_proximity_factor = 1.0
         else:
             budget_depletion_factor = 1.0
             net_zero_proximity_factor = 1.0
@@ -807,6 +817,57 @@ class ProjectsBroker:
 
         # Map to capacity factor range (1.0 to floor)
         return 1.0 - (1.0 - self.conventional_budget_capacity_floor) * normalized
+
+    def get_cdr_material_utilization(self) -> float:
+        """Return fraction of CDR material budget utilized (0.0 to 1.0+)."""
+        cumulative_gt = self.cumulative_deployment.get(ChannelType.CDR, 0.0) / 1e9
+        if self.cdr_material_budget_gt <= 0:
+            return 0.0
+        return cumulative_gt / self.cdr_material_budget_gt
+
+    def get_cdr_material_cost_factor(self) -> float:
+        """Cost multiplier based on material constraints (1.0 to max_multiplier).
+
+        As CDR scales, material scarcity (limestone, energy, water) increases costs.
+        Uses sigmoid centered at 60% utilization.
+        """
+        utilization = self.get_cdr_material_utilization()
+        if utilization <= 0:
+            return 1.0
+        if utilization >= 1.0:
+            return self.cdr_material_cost_multiplier
+
+        # Sigmoid: gradual onset at 40%, steep rise at 60-80%
+        midpoint = 0.60
+        steepness = 15.0
+
+        sigmoid = 1.0 / (1.0 + np.exp(-steepness * (utilization - midpoint)))
+        s0 = 1.0 / (1.0 + np.exp(-steepness * (0.0 - midpoint)))
+        s1 = 1.0 / (1.0 + np.exp(-steepness * (1.0 - midpoint)))
+        normalized = (sigmoid - s0) / max(s1 - s0, 1e-6)
+        normalized = np.clip(normalized, 0.0, 1.0)
+
+        return 1.0 + (self.cdr_material_cost_multiplier - 1.0) * normalized
+
+    def get_cdr_material_capacity_factor(self) -> float:
+        """Capacity factor based on material constraints (1.0 to floor)."""
+        utilization = self.get_cdr_material_utilization()
+        if utilization <= 0:
+            return 1.0
+        if utilization >= 1.0:
+            return self.cdr_material_capacity_floor
+
+        # Same sigmoid as cost factor
+        midpoint = 0.60
+        steepness = 15.0
+
+        sigmoid = 1.0 / (1.0 + np.exp(-steepness * (utilization - midpoint)))
+        s0 = 1.0 / (1.0 + np.exp(-steepness * (0.0 - midpoint)))
+        s1 = 1.0 / (1.0 + np.exp(-steepness * (1.0 - midpoint)))
+        normalized = (sigmoid - s0) / max(s1 - s0, 1e-6)
+        normalized = np.clip(normalized, 0.0, 1.0)
+
+        return 1.0 - (1.0 - self.cdr_material_capacity_floor) * normalized
 
     def update_cumulative_deployment(self, channel: ChannelType, tonnes: float):
         """Update cumulative deployment for learning curve tracking
@@ -1165,18 +1226,25 @@ class ProjectsBroker:
         return total_cost
 
     def get_cdr_capacity_limit(self, current_year: int) -> float:
-        """Calculate dynamic CDR capacity limit based on sigmoid ramp-up
-        
-        Models gradual industrial/technological scaling.
+        """Calculate dynamic CDR capacity limit based on sigmoid ramp-up and material constraints
+
+        Models gradual industrial/technological scaling + material scarcity.
         Center: Year 30
         Steepness (k): 0.15
         Max: ~60 Gt/year (from dashboard/const)
+        Material factor: Reduces capacity as material budget depletes
         """
         max_cap = self.max_capacity_gt_per_year[ChannelType.CDR]
         midpoint = 30.0
         k = 0.15
-        
+
+        # Time-based ramp-up
         capacity_limit = max_cap / (1.0 + np.exp(-k * (current_year - midpoint)))
+
+        # Apply material constraints (limestone, energy, water, steel)
+        material_capacity_factor = self.get_cdr_material_capacity_factor()
+        capacity_limit *= material_capacity_factor
+
         return capacity_limit
 
 
@@ -1494,6 +1562,10 @@ class GCR_ABM_Simulation:
                  scale_full_deployment_gt: float = 45.0,
                  damping_steepness: float = 8.0,
                  max_cdr_capacity: float = 40.0,
+                 bau_peak_year: int = 6,  # Year when BAU emissions peak (default year 6 = ~2030)
+                 cdr_material_budget_gt: float = 500.0,  # Total "easy" CDR before material constraints bind
+                 cdr_material_cost_multiplier: float = 4.0,  # Max cost increase when materials exhausted
+                 cdr_material_capacity_floor: float = 0.25,  # Min capacity when materials exhausted
                  funding_mode: str = "XCR",
                  # LLM agent parameters
                  llm_enabled: bool = False,
@@ -1557,7 +1629,7 @@ class GCR_ABM_Simulation:
         # Convert to ppm change: 1 GtC ≈ 0.47 ppm, 1 GtCO2 = 1/3.67 GtC
         # So 40 GtCO2/year = (40/3.67) GtC/year × 0.47 ppm/GtC ≈ 5.12 ppm/year
         self.bau_emissions_gt_per_year = 40.0  # GtCO2/year constant emission flow
-        self.bau_peak_year = 6  # Years to peak (~2030 if start ~2024)
+        self.bau_peak_year = bau_peak_year  # Parameter-driven peak timing
         self.bau_growth_rate_pre_peak = 0.01  # 1% annual growth until peak
         self.bau_decline_start_year = 60  # Late-century population decline begins
         self.bau_post_peak_plateau_rate = 0.0  # Flat emissions until population decline
@@ -1718,6 +1790,10 @@ class GCR_ABM_Simulation:
         self.projects_broker.full_scale_deployment_gt = scale_full_deployment_gt
         self.projects_broker.damping_steepness = damping_steepness
         self.projects_broker.max_capacity_gt_per_year[ChannelType.CDR] = max_cdr_capacity
+        # CDR material constraints
+        self.projects_broker.cdr_material_budget_gt = cdr_material_budget_gt
+        self.projects_broker.cdr_material_cost_multiplier = cdr_material_cost_multiplier
+        self.projects_broker.cdr_material_capacity_floor = cdr_material_capacity_floor
         self.auditor = Auditor(error_rate=0.01)
 
     def chaos_monkey(self):
@@ -2352,6 +2428,11 @@ class GCR_ABM_Simulation:
                 "Conventional_Capacity_Utilization": conv_capacity_util,
                 "Conventional_Capacity_Available": conv_capacity_available,
                 "Conventional_Capacity_Factor": conv_capacity_factor,
+
+                # NEW: CDR material constraints
+                "CDR_Material_Utilization": self.projects_broker.get_cdr_material_utilization(),
+                "CDR_Material_Cost_Factor": self.projects_broker.get_cdr_material_cost_factor(),
+                "CDR_Material_Capacity_Factor": self.projects_broker.get_cdr_material_capacity_factor(),
 
                 # NEW: Capital market flows (private investor demand)
                 "Net_Capital_Flow": net_capital_flow,

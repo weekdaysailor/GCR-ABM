@@ -45,8 +45,20 @@ adoption_rate = st.sidebar.slider("GCR Adoption Rate (countries/year)", min_valu
 inflation_target = st.sidebar.slider("Inflation Target (%)", min_value=0.0, max_value=10.0, value=2.0, step=0.25) / 100.0
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("XCR System Ramping")
+st.sidebar.subheader("BAU Emissions Trajectory")
 BASE_YEAR = 2024
+bau_peak_calendar_year = st.sidebar.slider(
+    "BAU Emissions Peak Year",
+    min_value=BASE_YEAR,
+    max_value=BASE_YEAR + 20,
+    value=BASE_YEAR + 6,  # Default 2030
+    step=1,
+    help="Calendar year when business-as-usual emissions peak (earlier = faster climate action baseline)"
+)
+bau_peak_year = bau_peak_calendar_year - BASE_YEAR
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("XCR System Ramping")
 xcr_start_calendar = st.sidebar.slider("XCR Start Year", min_value=BASE_YEAR, max_value=BASE_YEAR + 20, value=BASE_YEAR + 3, step=1,
                                        help=f"Calendar year when XCR system begins ({BASE_YEAR} = immediate)")
 xcr_start_year = xcr_start_calendar - BASE_YEAR
@@ -68,6 +80,24 @@ max_cdr_capacity = st.sidebar.slider("Maximum CDR Capacity (GtCO2/year)",
 damping_steepness = st.sidebar.slider("Sigmoid Damping Slope",
                                       min_value=2.0, max_value=20.0, value=8.0, step=0.5,
                                       help="Steeper values ramp scale/count and CDR learning faster around the midpoint")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("CDR Material Constraints")
+cdr_material_budget_gt = st.sidebar.slider(
+    "CDR Material Budget (Gt cumulative)",
+    min_value=100, max_value=2000, value=500, step=100,
+    help="Total CDR before material scarcity (limestone, energy, water) increases costs"
+)
+cdr_material_cost_multiplier = st.sidebar.slider(
+    "CDR Material Cost Multiplier (max)",
+    min_value=1.0, max_value=10.0, value=4.0, step=0.5,
+    help="Maximum cost increase when CDR materials exhausted (4.0 = 4x base cost)"
+)
+cdr_material_capacity_floor = st.sidebar.slider(
+    "CDR Material Capacity Floor",
+    min_value=0.1, max_value=0.5, value=0.25, step=0.05,
+    help="Minimum project initiation rate when materials exhausted (0.25 = 25%)"
+)
 
 st.sidebar.markdown("---")
 enable_audits = st.sidebar.checkbox("Enable Audits", value=True)
@@ -106,6 +136,10 @@ if run_button:
                                          scale_full_deployment_gt=scale_full_deployment_gt,
                                          damping_steepness=damping_steepness,
                                          max_cdr_capacity=max_cdr_capacity,
+                                         bau_peak_year=bau_peak_year,
+                                         cdr_material_budget_gt=cdr_material_budget_gt,
+                                         cdr_material_cost_multiplier=cdr_material_cost_multiplier,
+                                         cdr_material_capacity_floor=cdr_material_capacity_floor,
                                          funding_mode=mode)
                 df_run = sim.run_simulation()
                 df_run["run"] = i
