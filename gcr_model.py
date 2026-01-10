@@ -14,6 +14,7 @@ class ProjectStatus(Enum):
     DEVELOPMENT = "development"
     OPERATIONAL = "operational"
     FAILED = "failed"
+    COMPLETED = "completed"  # Finished operational lifespan naturally
 
 class ChannelType(Enum):
     CDR = 1          # Carbon Dioxide Removal (R=1 fixed)
@@ -72,9 +73,9 @@ class Project:
                 self.status = ProjectStatus.OPERATIONAL
         elif self.status == ProjectStatus.OPERATIONAL:
             self.years_operational += 1
-            # Check for end-of-life retirement (CM projects have 25-year lifespan)
+            # Check for end-of-life retirement (natural completion of project lifespan)
             if self.years_operational >= self.max_operational_years:
-                self.status = ProjectStatus.FAILED
+                self.status = ProjectStatus.COMPLETED  # Completed lifespan, not a failure
                 retired_due_to_age = True
             else:
                 # Stochastic decay: natural failures (fires, leaks, tech failure)
@@ -982,35 +983,48 @@ class ProjectsBroker:
                           residual_luc_emissions_gt: Optional[float] = None,
                           emissions_to_sinks_ratio: float = 10.0,
                           net_zero_ever_reached: bool = False,
-                          cdr_buildout_stopped: bool = False):
+                          cdr_buildout_stopped: bool = False,
+                          funding_mode: str = "XCR"):
         # Store emissions_to_sinks_ratio for cost calculation
         self.current_emissions_to_sinks_ratio = emissions_to_sinks_ratio
         """Initiate new projects where economics are favorable
 
-        Project starts when: (market_price * brake_factor) >= marginal_cost
-        Project capacity scales with climate urgency (reduces as CO2 approaches 350 ppm)
-        Which means: market_price * brake_factor >= marginal_cost
-        Or equivalently: price clears channel marginal costs
+        **XCR Mode (market-driven):**
+        - Projects are built by private developers who fund construction themselves
+        - XCR is minted AFTER CO2 is sequestered (verification → reward)
+        - Capital flows are for XCR trading, NOT project funding
+        - Initiation gated by: (market_price * brake_factor) >= marginal_cost
 
+        **GOVT Mode (fiscal policy):**
+        - Government directly funds project construction upfront
+        - Capital budget is a real constraint
+        - Sequential allocation across channels
+
+        Project capacity scales with climate urgency (reduces as CO2 approaches 350 ppm).
         Uses learning-adjusted costs and policy R-multipliers.
-        Respects conventional capacity limits.
-        Enforces physical capacity caps and available capital constraints.
+        Respects conventional capacity limits and physical capacity caps.
 
         As emissions_to_sinks_ratio approaches 1.0 (net-zero):
         - CM project initiation ramps down (ratio 2.0→1.0 = 100%→0%)
         - CDR project initiation ramps up to compensate
         At net-zero (ratio <= 1.0): No new CM projects (job done)
         """
-        remaining_capital = max(available_capital_usd, 0.0)
-        if remaining_capital <= 0:
+        # In GOVT mode, capital is a real constraint (government budget)
+        # In XCR mode, capital is for XCR trading, not project funding
+        is_govt_mode = (funding_mode == "GOVT")
+        remaining_capital = max(available_capital_usd, 0.0) if is_govt_mode else float('inf')
+
+        if is_govt_mode and remaining_capital <= 0:
             return
 
         benchmark_cdr_cost = self.calculate_marginal_cost(ChannelType.CDR)
         effective_price = market_price_xcr * brake_factor
 
         # Only initiate physical mitigation channels; co-benefits are handled as reward overlay
-        for channel in (ChannelType.AVOIDED_DEFORESTATION, ChannelType.CONVENTIONAL, ChannelType.CDR):
-            if remaining_capital <= 0:
+        # XCR mode: All channels initiate in parallel based on economics
+        # GOVT mode: Sequential allocation (capital budget constraint)
+        for channel in (ChannelType.CDR, ChannelType.CONVENTIONAL, ChannelType.AVOIDED_DEFORESTATION):
+            if is_govt_mode and remaining_capital <= 0:
                 break
 
             # Net-zero transition logic for conventional mitigation only
@@ -1077,25 +1091,32 @@ class ProjectsBroker:
             if channel == ChannelType.CONVENTIONAL:
                 capacity_factor = self.get_conventional_capacity_factor(current_year)
 
-            # Estimate how many projects available capital and capacity can support
+            # Estimate how many projects can be initiated
             scale_damper = self.calculate_project_scale_damper()
             count_damper = self.calculate_project_count_damper()
-            expected_base_seq = 1.5e7  # Reduced from 5.5e7 to avoid capital-limited truncation in Year 1
+            expected_base_seq = 1.5e7  # Expected base project scale
             min_base_seq = 1e6  # Minimum base scale
             expected_seq = expected_base_seq * scale_damper
             min_seq = min_base_seq * scale_damper
 
-            max_by_capital = int(remaining_capital / max(marginal_cost * expected_seq, 1.0))
+            # XCR mode: No capital constraint (developers fund projects, get paid in XCR after)
+            # GOVT mode: Capital budget constrains project count
+            if is_govt_mode:
+                max_by_capital = int(remaining_capital / max(marginal_cost * expected_seq, 1.0))
+            else:
+                max_by_capital = 1000  # Generous limit in XCR mode (gated by capacity instead)
+
             if remaining_capacity_gt is None:
                 max_by_capacity = max_by_capital
             else:
                 max_by_capacity = int((remaining_capacity_gt * 1e9) / max(min_seq, 1.0))
+
             max_projects = max(min(max_by_capital, max_by_capacity), 0)
             num_projects = int(max_projects * urgency_factor * capacity_factor * count_damper * net_zero_ramp_factor * brake_factor)
 
             # Inner loop: create multiple projects for this channel
             for _ in range(num_projects):
-                if remaining_capital <= 0:
+                if is_govt_mode and remaining_capital <= 0:
                     break
                 if remaining_capacity_gt is not None and remaining_capacity_gt <= 0:
                     break
@@ -1127,11 +1148,13 @@ class ProjectsBroker:
                 if remaining_capacity_gt is not None:
                     annual_seq = min(annual_seq, remaining_capacity_gt * 1e9)
 
-                # Cap by available capital (simple affordability constraint)
-                max_affordable = (remaining_capital / marginal_cost) if marginal_cost > 0 else 0.0
-                annual_seq = min(annual_seq, max_affordable)
-                if annual_seq <= 0:
-                    break
+                # GOVT mode: Cap by available capital (government budget constraint)
+                # XCR mode: No capital cap (developers fund projects themselves)
+                if is_govt_mode:
+                    max_affordable = (remaining_capital / marginal_cost) if marginal_cost > 0 else 0.0
+                    annual_seq = min(annual_seq, max_affordable)
+                    if annual_seq <= 0:
+                        break
 
                 co_benefit_score = float(np.clip(np.random.normal(0.6, 0.2), 0.0, 1.0))
 
@@ -1152,7 +1175,13 @@ class ProjectsBroker:
                 self.projects.append(project)
                 self.countries[country]['projects'].append(project.id)
                 self.next_project_id += 1
-                remaining_capital -= annual_seq * marginal_cost
+
+                # GOVT mode: Deduct from capital budget
+                # XCR mode: No capital deduction (developers fund projects)
+                if is_govt_mode:
+                    remaining_capital -= annual_seq * marginal_cost
+
+                # Always deduct from capacity (physical constraint in both modes)
                 if remaining_capacity_gt is not None:
                     remaining_capacity_gt -= annual_seq / 1e9
 
@@ -1577,7 +1606,7 @@ class GCR_ABM_Simulation:
                  cdr_material_capacity_floor: float = 0.25,  # Min capacity when materials exhausted
                  one_time_seed_capital_usd: float = 20e9,  # One-time bootstrap (default $20B)
                  cdr_buildout_stop_year: int = 25,  # Stop NEW CDR project initiation after this year (default 25)
-                 cdr_buildout_stop_on_co2_peak: bool = True,  # Also stop buildout when CO2 peaks (starts declining)
+                 cdr_buildout_stop_on_co2_peak: bool = True,  # Also stop buildout when approaching 350 ppm target
                  funding_mode: str = "XCR",
                  # LLM agent parameters
                  llm_enabled: bool = False,
@@ -1652,7 +1681,6 @@ class GCR_ABM_Simulation:
         self.cdr_buildout_stop_on_co2_peak = cdr_buildout_stop_on_co2_peak
         self.cdr_buildout_stopped = False  # Track if buildout has been stopped
         self.cdr_buildout_stop_trigger_year = None  # Year when buildout stopped
-        self.co2_history = []  # Track last 3 years of CO2 for peak detection
 
         # Expanded country pool (50 countries with varied characteristics)
         # Format: gdp_tril, base_cqe (as fraction of trillion), tier, region, active, adoption_year
@@ -1828,8 +1856,13 @@ class GCR_ABM_Simulation:
 
         Stops when:
         1. Year >= cdr_buildout_stop_year (time-based), OR
-        2. CO2 peaks and starts declining (if cdr_buildout_stop_on_co2_peak enabled)
-           - Requires 2-3 consecutive years of decline to avoid false peaks
+        2. Approaching 350 ppm target (if cdr_buildout_stop_on_co2_peak enabled)
+           - Stops when CO2 < 360 ppm (10 ppm buffer to prevent overshoot)
+
+        Rationale:
+        - Net-zero is reached when emissions = sinks (conventional mitigation job done)
+        - CDR should continue PAST net-zero for atmospheric drawdown (420 ppm → 350 ppm)
+        - Only stop when approaching target to prevent overshoot below 350 ppm
 
         Existing operational projects continue running (just opex).
         """
@@ -1843,25 +1876,18 @@ class GCR_ABM_Simulation:
                 self.cdr_buildout_stop_trigger_year = year
             return True
 
-        # CO2 peak-based stop (requires 2-3 consecutive years of decline)
+        # Target proximity stop (prevent overshoot below 350 ppm)
         if self.cdr_buildout_stop_on_co2_peak:
-            # Track CO2 history (keep last 3 years)
-            self.co2_history.append(current_co2)
-            if len(self.co2_history) > 3:
-                self.co2_history.pop(0)
+            target_co2 = 350.0
+            buffer_ppm = 10.0  # Stop 10 ppm before target
 
-            # Check for 2-3 consecutive years of decline
-            if len(self.co2_history) >= 3:
-                # All three years show decline: year[i] < year[i-1]
-                decline_year_1 = self.co2_history[1] < self.co2_history[0]
-                decline_year_2 = self.co2_history[2] < self.co2_history[1]
-
-                if decline_year_1 and decline_year_2:
-                    # CO2 has been declining for 2 consecutive years - peak confirmed
-                    if not self.cdr_buildout_stopped:
-                        self.cdr_buildout_stopped = True
-                        self.cdr_buildout_stop_trigger_year = year
-                    return True
+            if current_co2 < (target_co2 + buffer_ppm):
+                # Approaching target - stop NEW CDR buildout to prevent overshoot
+                if not self.cdr_buildout_stopped:
+                    self.cdr_buildout_stopped = True
+                    self.cdr_buildout_stop_trigger_year = year
+                    print(f"[Year {year}] CDR BUILDOUT STOPPED: Approaching target (CO2 = {current_co2:.1f} ppm, target = {target_co2} ppm)")
+                return True
 
         return False
 
@@ -1955,9 +1981,11 @@ class GCR_ABM_Simulation:
         if years_since_start >= self.years_to_full_capacity:
             return 1.0  # Full capacity reached
 
-        # Linear ramp from 0.0 to 1.0
+        # Linear ramp from 0.2 to 1.0 (founding countries have initial capacity)
+        # This ensures seed capital can be deployed at year 0
+        initial_capacity = 0.2  # 20% initial capacity from founding members
         progress = years_since_start / self.years_to_full_capacity
-        return progress
+        return initial_capacity + (1.0 - initial_capacity) * progress
 
     def run_simulation(self):
         """Execute multi-agent simulation"""
@@ -2135,7 +2163,8 @@ class GCR_ABM_Simulation:
                     cdr_buildout_stopped=cdr_buildout_stopped,
                     cea=self.cea,
                     residual_emissions_gt=remaining_conventional_need_gt,
-                    residual_luc_emissions_gt=land_use_change_gtco2
+                    residual_luc_emissions_gt=land_use_change_gtco2,
+                    funding_mode=self.funding_mode
                 )
             else:
                 emissions_to_sinks_ratio = 10.0  # Default high ratio before system active
@@ -2154,6 +2183,7 @@ class GCR_ABM_Simulation:
             operational_projects = self.projects_broker.get_operational_projects()
             development_projects = [p for p in self.projects_broker.projects if p.status == ProjectStatus.DEVELOPMENT]
             failed_projects = [p for p in self.projects_broker.projects if p.status == ProjectStatus.FAILED]
+            completed_projects = [p for p in self.projects_broker.projects if p.status == ProjectStatus.COMPLETED]
             total_sequestration = 0.0
             cdr_sequestration = 0.0
             conventional_mitigation = 0.0
@@ -2447,6 +2477,7 @@ class GCR_ABM_Simulation:
                 "Projects_Operational": len(operational_projects),
                 "Projects_Development": len(development_projects),
                 "Projects_Failed": len(failed_projects),
+                "Projects_Completed": len(completed_projects),
                 "Sequestration_Tonnes": total_sequestration,
                 "CDR_Sequestration_Tonnes": cdr_sequestration_tonnes,
                 "Conventional_Mitigation_Tonnes": conv_sequestration_tonnes,
